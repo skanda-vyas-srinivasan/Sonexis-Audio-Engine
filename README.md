@@ -71,6 +71,18 @@ make run RUN_ARGS=--debug-pitch-up
 
 In debug pitch mode, source audio should sound pitched up by roughly seven semitones.
 
+## Smoke Tests
+
+The smoke tests start the engine briefly, send `SIGINT`, and verify expected startup, routing, frame movement, DSP mode, and cleanup logs.
+
+```sh
+cd /Users/skandavyassrinivasan/dev/ProcessTapDSP
+Scripts/smoke-test.sh
+Scripts/smoke-test.sh --debug-pitch-up
+```
+
+These tests cannot verify what the audio sounds like. They only verify the Core Audio pipeline and cleanup behavior visible from diagnostics.
+
 Example diagnostic:
 
 ```text
@@ -145,6 +157,8 @@ The expected audible result is that normal system audio returns without a sudden
 ```text
 Info.plist
 Makefile
+Scripts/
+  smoke-test.sh
 Sources/
   AudioOutputEngine.swift
   CoreAudioSupport.swift
