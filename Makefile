@@ -9,8 +9,12 @@ EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 MODULE_CACHE := $(BUILD_DIR)/module-cache
 
 SWIFT_SOURCES := \
+	Sources/AudioOutputEngine.swift \
 	Sources/CoreAudioSupport.swift \
-	Sources/ProcessTapDSPPrototype.swift \
+	Sources/DSPProcessor.swift \
+	Sources/ProcessTapDSPApp.swift \
+	Sources/RealtimeRingBuffer.swift \
+	Sources/TapCaptureEngine.swift \
 	Sources/main.swift
 
 C_SOURCES := \

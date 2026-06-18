@@ -97,3 +97,29 @@ If rebuild fails because no default output device exists, the app leaves the pip
 The app excludes its own HAL process object from the tap and verifies the installed tap description after creation. If verification fails, playback does not start.
 
 This matters because the app's processed playback is sent to the same default output route that the tap is monitoring. Without self-exclusion, the app could capture and replay its own output.
+
+## Source Ownership
+
+`ProcessTapDSPApp.swift`
+
+Coordinates app lifecycle, route changes, sleep/wake handling, startup preroll, shutdown ramp timing, status diagnostics, and recovery policy. It does not own individual tap/output IOProc callback implementations.
+
+`TapCaptureEngine.swift`
+
+Owns `CATapDescription`, the Process Tap `AudioObjectID`, the private aggregate `AudioDeviceID`, and the tap aggregate IOProc. Its realtime callback only forwards incoming tap buffers to `RealtimeRingBuffer`.
+
+`AudioOutputEngine.swift`
+
+Owns the current default output device IOProc. Its realtime callback only reads processed samples from `RealtimeRingBuffer` into the Core Audio output buffer.
+
+`DSPProcessor.swift`
+
+Owns the hardcoded gain values and ramp durations. It requests gain ramps on the ring buffer from the main thread; it does not allocate or run Swift DSP inside Core Audio callbacks.
+
+`RealtimeRingBuffer.swift`
+
+Provides Swift lifetime and metrics access around the C realtime ring buffer. The actual audio-thread storage, atomics, startup read gate, gain ramp, and sample copy/multiply path remain in `RealtimeAudioRing.c`.
+
+`CoreAudioSupport.swift`
+
+Contains shared HAL property helpers, error types, format checks, device summaries, and cleanup logging.

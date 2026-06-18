@@ -28,6 +28,14 @@ func checkOSStatus(_ status: OSStatus, operation: String) throws {
     }
 }
 
+func printCleanupResult(_ label: String, status: OSStatus) {
+    if status == noErr {
+        print("Cleanup: \(label).")
+    } else {
+        print("Cleanup warning: \(label) returned \(status.osStatusDescription).")
+    }
+}
+
 extension OSStatus {
     var osStatusDescription: String {
         let code = fourCharacterCode

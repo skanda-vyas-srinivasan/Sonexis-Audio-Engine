@@ -133,10 +133,14 @@ The expected audible result is that normal system audio returns without a sudden
 Info.plist
 Makefile
 Sources/
+  AudioOutputEngine.swift
   CoreAudioSupport.swift
-  ProcessTapDSPPrototype.swift
+  DSPProcessor.swift
+  ProcessTapDSPApp.swift
   RealtimeAudioRing.c
   RealtimeAudioRing.h
+  RealtimeRingBuffer.swift
+  TapCaptureEngine.swift
   main.swift
 ```
 

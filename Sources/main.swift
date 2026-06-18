@@ -12,23 +12,23 @@ guard ProcessInfo.processInfo.isOperatingSystemAtLeast(requiredVersion) else {
     exit(EXIT_FAILURE)
 }
 
-let prototype = ProcessTapDSPPrototype()
+let app = ProcessTapDSPApp()
 
 signal(SIGINT, SIG_IGN)
 let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 interruptSource.setEventHandler {
-    prototype.stop(reason: "SIGINT / Control-C") {
+    app.stop(reason: "SIGINT / Control-C") {
         exit(EXIT_SUCCESS)
     }
 }
 interruptSource.resume()
 
 do {
-    try prototype.start()
+    try app.start()
     RunLoop.main.run()
 } catch {
     let startupError = error
-    prototype.stop(reason: "startup failure") {
+    app.stop(reason: "startup failure") {
         fputs("\(startupError)\n", stderr)
         if let coreAudioError = startupError as? CoreAudioError,
            coreAudioError.operation == "AudioHardwareCreateProcessTap" {
