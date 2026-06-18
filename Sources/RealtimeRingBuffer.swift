@@ -46,6 +46,17 @@ final class RealtimeRingBuffer {
         SonexisAudioRingBufferSetReadEnabled(pointer, enabled)
     }
 
+    func configureBassBoost(enabled: Bool, sampleRate: Double, cutoffHz: Float, amount: Float) {
+        guard let pointer else { return }
+        SonexisAudioRingBufferConfigureBassBoost(
+            pointer,
+            enabled,
+            Float(sampleRate),
+            cutoffHz,
+            amount
+        )
+    }
+
     var fillFrames: UInt32 {
         guard let pointer else { return 0 }
         return SonexisAudioRingBufferGetFillFrames(pointer)

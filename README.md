@@ -5,7 +5,7 @@ Standalone macOS 14.4+ proof of concept for system-wide audio processing with Co
 The project proves this pipeline:
 
 ```text
-system audio -> Core Audio Process Tap -> hardcoded gain DSP -> current default output device
+system audio -> Core Audio Process Tap -> hardcoded bass boost + unity gain -> current default output device
 ```
 
 It does not use BlackHole, a virtual audio driver, or manual output-device switching.
@@ -14,7 +14,7 @@ It does not use BlackHole, a virtual audio driver, or manual output-device switc
 
 - `AudioHardwareCreateProcessTap` captures live outgoing system audio.
 - `CATapMutedWhenTapped` suppresses the original direct output path while the app reads the tap.
-- The app applies hardcoded gain DSP.
+- The app applies a hardcoded bass boost and keeps processing gain at unity.
 - Processed audio plays through the selected default output device.
 - Self-exclusion prevents the app's own playback from being recursively captured.
 - Input peak confirms real capture and drops to silence when source audio is paused.
@@ -56,14 +56,15 @@ Then play audio in another app such as Spotify, YouTube, Music, or a browser.
 Expected signs of success:
 
 - Audio remains on the normal selected output device.
-- On startup, processed playback waits for a small preroll buffer, begins near unity, then ramps down to the hardcoded gain of `0.1`.
+- On startup, processed playback waits for a small preroll buffer and remains at unity gain.
+- Bass-heavy material should have noticeably stronger low end.
 - Pressing `Control-C` briefly ramps processed playback back to unity gain, then stops the app and returns normal system output.
 - Terminal diagnostics show nonzero `in/s`, nonzero `out/s`, and input peak above silence while source audio is playing.
 
 Example diagnostic:
 
 ```text
-ring fill: 512 frames, in/s: 48000, out/s: 48000, input peak: -12.4 dBFS, gain: 0.100, dropped: 0, underflow: 0
+ring fill: 512 frames, in/s: 48000, out/s: 48000, input peak: -12.4 dBFS, gain: 1.000, dropped: 0, underflow: 0
 ```
 
 ## Route Changes
@@ -78,7 +79,7 @@ When the default output device changes, the app:
 4. Frees the realtime ring buffer.
 5. Reads the new default output device.
 6. Recreates the full capture/playback pipeline on the new device.
-7. Waits for a small preroll buffer, starts the new processed path at unity gain, and ramps down to `0.1`.
+7. Waits for a small preroll buffer and starts the new processed path at unity gain.
 
 Diagnostics print:
 
@@ -103,7 +104,7 @@ Manual validation checklist: [MILESTONE_4_TESTS.md](MILESTONE_4_TESTS.md).
 Press `Control-C` to stop the app. Shutdown logs confirm that the app:
 
 1. Removes the default-output route listener.
-2. Ramps processed playback from the hardcoded gain back to unity gain over a short realtime-safe ramp.
+2. Confirms processed playback is at unity gain before releasing the Process Tap.
 3. Stops the tap aggregate IOProc.
 4. Stops the playback output IOProc.
 5. Destroys both IOProc IDs.

@@ -7,7 +7,7 @@ Other apps
   -> current default output device stream
   -> private Core Audio Process Tap
   -> private aggregate device input IOProc
-  -> hardcoded gain DSP with realtime gain ramp control
+  -> hardcoded bass boost DSP with unity gain and realtime gain ramp control
   -> preallocated realtime ring buffer
   -> default output device output IOProc
   -> speakers/headphones
@@ -45,7 +45,7 @@ Created with `AudioHardwareCreateAggregateDevice` and `kAudioAggregateDeviceTapL
 
 Tap aggregate IOProc
 
-Receives Float32 tap buffers and writes gained samples into the realtime ring buffer.
+Receives Float32 tap buffers and writes bass-boosted samples into the realtime ring buffer.
 
 Default output IOProc
 
@@ -64,7 +64,9 @@ Audio callbacks must not:
 
 The current callback path uses a small C11-atomic single-producer/single-consumer ring buffer to avoid Swift macOS 15-only atomics and to keep callback work predictable on macOS 14.4.
 
-Gain changes are requested from the main thread with atomics and applied inside the tap callback. Startup and route rebuilds initialize the processed path at unity, hold output reads until the ring has a small preroll buffer, then ramp down to the prototype's `0.1` gain. If capture has started but the target fill is not reached, the app can accept a partial fill after a short timeout. Shutdown and route rebuilds ramp back to unity before the tap is destroyed, so releasing `CATapMutedWhenTapped` does not abruptly jump from quiet processed audio to normal system volume.
+Gain changes are requested from the main thread with atomics and applied inside the tap callback. The current prototype keeps its processing gain at `1.0` so the bass boost can be evaluated without an overall attenuation masking the result. Startup and route rebuilds initialize the processed path at unity and hold output reads until the ring has a small preroll buffer. If capture has started but the target fill is not reached, the app can accept a partial fill after a short timeout. Shutdown and route rebuilds confirm the processed path is at unity before the tap is destroyed, so releasing `CATapMutedWhenTapped` does not abruptly change overall gain.
+
+The bass boost is a hardcoded one-pole low-frequency shelf implemented in `RealtimeAudioRing.c`. It tracks a low-pass state per channel and mixes that low band back into the signal. This is intentionally simple and audible; it is not a production EQ.
 
 The startup preroll gate is implemented in the C ring buffer with an atomic read-enabled flag. While the gate is closed, the output IOProc writes silence without draining captured frames. Once the main thread observes enough fill, it enables reads and requests the gain ramp. This avoids locks, allocation, and Swift state mutation in realtime callbacks.
 
@@ -114,11 +116,11 @@ Owns the current default output device IOProc. Its realtime callback only reads 
 
 `DSPProcessor.swift`
 
-Owns the hardcoded gain values and ramp durations. It requests gain ramps on the ring buffer from the main thread; it does not allocate or run Swift DSP inside Core Audio callbacks.
+Owns the hardcoded unity gain, bass boost settings, and ramp durations. It configures the ring buffer from the main thread; it does not allocate or run Swift DSP inside Core Audio callbacks.
 
 `RealtimeRingBuffer.swift`
 
-Provides Swift lifetime and metrics access around the C realtime ring buffer. The actual audio-thread storage, atomics, startup read gate, gain ramp, and sample copy/multiply path remain in `RealtimeAudioRing.c`.
+Provides Swift lifetime and metrics access around the C realtime ring buffer. The actual audio-thread storage, atomics, startup read gate, gain ramp, bass boost, and sample copy/multiply path remain in `RealtimeAudioRing.c`.
 
 `CoreAudioSupport.swift`
 

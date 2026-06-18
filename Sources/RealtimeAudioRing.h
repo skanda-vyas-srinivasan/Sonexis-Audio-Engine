@@ -21,6 +21,13 @@ uint32_t SonexisAudioRingBufferReadToAudioBufferList(
 );
 
 void SonexisAudioRingBufferSetReadEnabled(SonexisAudioRingBuffer *ringBuffer, bool enabled);
+void SonexisAudioRingBufferConfigureBassBoost(
+    SonexisAudioRingBuffer *ringBuffer,
+    bool enabled,
+    float sampleRate,
+    float cutoffHz,
+    float amount
+);
 uint32_t SonexisAudioRingBufferGetFillFrames(SonexisAudioRingBuffer *ringBuffer);
 uint64_t SonexisAudioRingBufferGetDroppedFrames(SonexisAudioRingBuffer *ringBuffer);
 uint64_t SonexisAudioRingBufferGetUnderflowFrames(SonexisAudioRingBuffer *ringBuffer);

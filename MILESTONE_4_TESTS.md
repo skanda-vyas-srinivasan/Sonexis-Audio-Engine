@@ -16,10 +16,10 @@ Use this checklist to validate sleep/wake and device-disconnect behavior.
 
    ```text
    Startup: releasing processed output after ring fill ...
-   Gain: ramping processed path to 0.1 ...
+   Gain: ramping processed path to 1.0 ...
    ```
 
-4. Confirm diagnostics show nonzero `in/s`, nonzero `out/s`, and `gain: 0.100`.
+4. Confirm diagnostics show nonzero `in/s`, nonzero `out/s`, and `gain: 1.000`.
 
 ## Sleep/Wake
 

@@ -1,14 +1,26 @@
 import Foundation
 
 final class DSPProcessor {
-    let processingGain: Float = 0.1
+    let processingGain: Float = 1.0
     let unityGain: Float = 1.0
+    let bassBoostEnabled = true
+    let bassBoostCutoffHz: Float = 160.0
+    let bassBoostAmount: Float = 1.0
     let startupRampDuration: TimeInterval = 0.40
     let shutdownRampDuration: TimeInterval = 0.25
     let routeChangeRampDuration: TimeInterval = 0.15
 
     func configureInitialGain(on ringBuffer: RealtimeRingBuffer) {
         ringBuffer.setGainImmediate(unityGain)
+    }
+
+    func configureBassBoost(on ringBuffer: RealtimeRingBuffer, sampleRate: Double) {
+        ringBuffer.configureBassBoost(
+            enabled: bassBoostEnabled,
+            sampleRate: sampleRate,
+            cutoffHz: bassBoostCutoffHz,
+            amount: bassBoostAmount
+        )
     }
 
     func requestProcessingGainRamp(

@@ -5,8 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 struct SonexisAudioRingBuffer {
     float *samples;
+    float *bassBoostLowpassState;
     uint32_t capacityFrames;
     uint32_t channels;
     atomic_uint writeFrame;
@@ -21,10 +26,13 @@ struct SonexisAudioRingBuffer {
     atomic_uint gainRampRequestID;
     atomic_uint currentGainPPM;
     atomic_bool readEnabled;
+    atomic_bool bassBoostEnabled;
     float currentGain;
     float rampTargetGain;
     uint32_t rampRemainingFrames;
     uint32_t appliedGainRampRequestID;
+    float bassBoostCoefficient;
+    float bassBoostAmount;
 };
 
 static float clampGain(float gain) {
@@ -99,6 +107,13 @@ SonexisAudioRingBuffer *SonexisAudioRingBufferCreate(uint32_t capacityFrames, ui
         return NULL;
     }
 
+    ringBuffer->bassBoostLowpassState = calloc((size_t)channels, sizeof(float));
+    if (ringBuffer->bassBoostLowpassState == NULL) {
+        free(ringBuffer->samples);
+        free(ringBuffer);
+        return NULL;
+    }
+
     ringBuffer->capacityFrames = capacityFrames;
     ringBuffer->channels = channels;
     atomic_init(&ringBuffer->writeFrame, 0);
@@ -113,10 +128,13 @@ SonexisAudioRingBuffer *SonexisAudioRingBufferCreate(uint32_t capacityFrames, ui
     atomic_init(&ringBuffer->gainRampRequestID, 0);
     atomic_init(&ringBuffer->currentGainPPM, gainToPPM(1.0f));
     atomic_init(&ringBuffer->readEnabled, true);
+    atomic_init(&ringBuffer->bassBoostEnabled, false);
     ringBuffer->currentGain = 1.0f;
     ringBuffer->rampTargetGain = 1.0f;
     ringBuffer->rampRemainingFrames = 0;
     ringBuffer->appliedGainRampRequestID = 0;
+    ringBuffer->bassBoostCoefficient = 0.0f;
+    ringBuffer->bassBoostAmount = 0.0f;
 
     return ringBuffer;
 }
@@ -126,8 +144,20 @@ void SonexisAudioRingBufferDestroy(SonexisAudioRingBuffer *ringBuffer) {
         return;
     }
 
+    free(ringBuffer->bassBoostLowpassState);
     free(ringBuffer->samples);
     free(ringBuffer);
+}
+
+static float processBassBoostSample(
+    SonexisAudioRingBuffer *ringBuffer,
+    float inputSample,
+    uint32_t channel
+) {
+    float low = ringBuffer->bassBoostLowpassState[channel];
+    low += ringBuffer->bassBoostCoefficient * (inputSample - low);
+    ringBuffer->bassBoostLowpassState[channel] = low;
+    return inputSample + (low * ringBuffer->bassBoostAmount);
 }
 
 uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
@@ -158,6 +188,10 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
     }
 
     float peak = 0.0f;
+    bool bassBoostEnabled = atomic_load_explicit(
+        &ringBuffer->bassBoostEnabled,
+        memory_order_acquire
+    );
     uint32_t requestID = atomic_load_explicit(&ringBuffer->gainRampRequestID, memory_order_acquire);
     if (requestID != ringBuffer->appliedGainRampRequestID) {
         ringBuffer->appliedGainRampRequestID = requestID;
@@ -211,13 +245,29 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
                 if (absoluteSample > peak) {
                     peak = absoluteSample;
                 }
-                ringBuffer->samples[outputBase + outputChannel] = inputSample * frameGain;
+                float processedSample = inputSample;
+                if (bassBoostEnabled) {
+                    processedSample = processBassBoostSample(
+                        ringBuffer,
+                        inputSample,
+                        outputChannel
+                    );
+                }
+                ringBuffer->samples[outputBase + outputChannel] = processedSample * frameGain;
                 outputChannel += 1;
             }
         }
 
         while (outputChannel < ringBuffer->channels) {
-            ringBuffer->samples[outputBase + outputChannel] = 0.0f;
+            float processedSample = 0.0f;
+            if (bassBoostEnabled) {
+                processedSample = processBassBoostSample(
+                    ringBuffer,
+                    0.0f,
+                    outputChannel
+                );
+            }
+            ringBuffer->samples[outputBase + outputChannel] = processedSample * frameGain;
             outputChannel += 1;
         }
     }
@@ -311,6 +361,58 @@ void SonexisAudioRingBufferSetReadEnabled(SonexisAudioRingBuffer *ringBuffer, bo
     }
 
     atomic_store_explicit(&ringBuffer->readEnabled, enabled, memory_order_release);
+}
+
+void SonexisAudioRingBufferConfigureBassBoost(
+    SonexisAudioRingBuffer *ringBuffer,
+    bool enabled,
+    float sampleRate,
+    float cutoffHz,
+    float amount
+) {
+    if (ringBuffer == NULL) {
+        return;
+    }
+
+    if (!enabled || sampleRate <= 0.0f || cutoffHz <= 0.0f || amount <= 0.0f) {
+        ringBuffer->bassBoostCoefficient = 0.0f;
+        ringBuffer->bassBoostAmount = 0.0f;
+        memset(
+            ringBuffer->bassBoostLowpassState,
+            0,
+            (size_t)ringBuffer->channels * sizeof(float)
+        );
+        atomic_store_explicit(&ringBuffer->bassBoostEnabled, false, memory_order_release);
+        return;
+    }
+
+    float nyquist = sampleRate * 0.5f;
+    float safeCutoffHz = cutoffHz;
+    if (safeCutoffHz > nyquist) {
+        safeCutoffHz = nyquist;
+    }
+
+    float coefficient = 1.0f - expf(-2.0f * (float)M_PI * safeCutoffHz / sampleRate);
+    if (coefficient < 0.0f) {
+        coefficient = 0.0f;
+    }
+    if (coefficient > 1.0f) {
+        coefficient = 1.0f;
+    }
+
+    float safeAmount = amount;
+    if (safeAmount > 2.0f) {
+        safeAmount = 2.0f;
+    }
+
+    memset(
+        ringBuffer->bassBoostLowpassState,
+        0,
+        (size_t)ringBuffer->channels * sizeof(float)
+    );
+    ringBuffer->bassBoostCoefficient = coefficient;
+    ringBuffer->bassBoostAmount = safeAmount;
+    atomic_store_explicit(&ringBuffer->bassBoostEnabled, true, memory_order_release);
 }
 
 uint32_t SonexisAudioRingBufferGetFillFrames(SonexisAudioRingBuffer *ringBuffer) {
