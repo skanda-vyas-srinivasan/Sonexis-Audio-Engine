@@ -60,12 +60,24 @@ final class ProcessTapDSPPrototype {
         try rebuildPipeline(reason: "initial start")
     }
 
-    func stop() {
+    func stop(reason: String = "shutdown") {
+        print("")
+        print("Stopping ProcessTapDSP: \(reason)")
+
+        if isStopped {
+            print("Shutdown skipped: app is already stopped.")
+            return
+        }
+
         isStopped = true
-        routeChangeWorkItem?.cancel()
+        if routeChangeWorkItem != nil {
+            routeChangeWorkItem?.cancel()
+            print("Cleanup: canceled pending route-change rebuild.")
+        }
         routeChangeWorkItem = nil
-        removeDefaultOutputListener()
-        teardownPipeline()
+        removeDefaultOutputListener(log: true)
+        teardownPipeline(log: true, reason: reason)
+        print("Shutdown complete. Normal system audio should be restored.")
     }
 
     fileprivate func captureCallback(inputData: UnsafePointer<AudioBufferList>) {
@@ -88,13 +100,13 @@ final class ProcessTapDSPPrototype {
         printRouteDiagnostics(context: "before rebuild")
 
         do {
-            teardownPipeline()
+            teardownPipeline(log: reason != "initial start", reason: "rebuild cleanup")
             try buildPipeline()
             printRouteDiagnostics(context: "after rebuild")
             print("Started Process Tap -> gain DSP -> default output playback.")
             print("Play system audio in another app. Press Control-C to stop.")
         } catch {
-            teardownPipeline()
+            teardownPipeline(log: true, reason: "rebuild failure cleanup")
             throw error
         }
     }
@@ -186,41 +198,69 @@ final class ProcessTapDSPPrototype {
         startStatusTimer()
     }
 
-    private func teardownPipeline() {
-        statusTimer?.cancel()
+    private func teardownPipeline(log: Bool = false, reason: String = "pipeline teardown") {
+        if log {
+            print("Cleanup: tearing down audio pipeline (\(reason)).")
+        }
+
+        if statusTimer != nil {
+            statusTimer?.cancel()
+            if log { print("Cleanup: canceled status timer.") }
+        }
         statusTimer = nil
 
         if tapAggregateDeviceID != kAudioObjectUnknown, let tapIOProcID {
-            _ = AudioDeviceStop(tapAggregateDeviceID, tapIOProcID)
+            let status = AudioDeviceStop(tapAggregateDeviceID, tapIOProcID)
+            if log { printCleanupResult("stopped tap aggregate IOProc", status: status) }
+        } else if log {
+            print("Cleanup: no tap aggregate IOProc to stop.")
         }
 
         if defaultOutputDeviceID != kAudioObjectUnknown, let outputIOProcID {
-            _ = AudioDeviceStop(defaultOutputDeviceID, outputIOProcID)
+            let status = AudioDeviceStop(defaultOutputDeviceID, outputIOProcID)
+            if log { printCleanupResult("stopped playback output IOProc", status: status) }
+        } else if log {
+            print("Cleanup: no playback output IOProc to stop.")
         }
 
         if tapAggregateDeviceID != kAudioObjectUnknown, let tapIOProcID {
-            _ = AudioDeviceDestroyIOProcID(tapAggregateDeviceID, tapIOProcID)
+            let status = AudioDeviceDestroyIOProcID(tapAggregateDeviceID, tapIOProcID)
+            if log { printCleanupResult("destroyed tap aggregate IOProc ID", status: status) }
             self.tapIOProcID = nil
+        } else if log {
+            print("Cleanup: no tap aggregate IOProc ID to destroy.")
         }
 
         if defaultOutputDeviceID != kAudioObjectUnknown, let outputIOProcID {
-            _ = AudioDeviceDestroyIOProcID(defaultOutputDeviceID, outputIOProcID)
+            let status = AudioDeviceDestroyIOProcID(defaultOutputDeviceID, outputIOProcID)
+            if log { printCleanupResult("destroyed playback output IOProc ID", status: status) }
             self.outputIOProcID = nil
+        } else if log {
+            print("Cleanup: no playback output IOProc ID to destroy.")
         }
 
         if tapAggregateDeviceID != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyAggregateDevice(tapAggregateDeviceID)
+            let status = AudioHardwareDestroyAggregateDevice(tapAggregateDeviceID)
+            if log { printCleanupResult("destroyed private aggregate device", status: status) }
             tapAggregateDeviceID = kAudioObjectUnknown
+        } else if log {
+            print("Cleanup: no private aggregate device to destroy.")
         }
 
         if tapID != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyProcessTap(tapID)
+            let status = AudioHardwareDestroyProcessTap(tapID)
+            if log { printCleanupResult("destroyed Process Tap", status: status) }
             tapID = kAudioObjectUnknown
+        } else if log {
+            print("Cleanup: no Process Tap to destroy.")
         }
 
         if let ringBuffer {
             SonexisAudioRingBufferDestroy(ringBuffer)
             self.ringBuffer = nil
+            if log { print("Cleanup: freed realtime ring buffer.") }
+        } else if log {
+            print("Cleanup: no realtime ring buffer to free.")
         }
 
         defaultOutputDeviceID = kAudioObjectUnknown
@@ -331,16 +371,17 @@ final class ProcessTapDSPPrototype {
         defaultOutputListenerBlock = block
     }
 
-    private func removeDefaultOutputListener() {
+    private func removeDefaultOutputListener(log: Bool = false) {
         guard let defaultOutputListenerBlock else { return }
 
         var address = defaultOutputDeviceAddress()
-        _ = AudioObjectRemovePropertyListenerBlock(
+        let status = AudioObjectRemovePropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject),
             &address,
             DispatchQueue.main,
             defaultOutputListenerBlock
         )
+        if log { printCleanupResult("removed default-output route listener", status: status) }
         self.defaultOutputListenerBlock = nil
     }
 
@@ -440,5 +481,13 @@ final class ProcessTapDSPPrototype {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
+    }
+
+    private func printCleanupResult(_ label: String, status: OSStatus) {
+        if status == noErr {
+            print("Cleanup: \(label).")
+        } else {
+            print("Cleanup warning: \(label) returned \(status.osStatusDescription).")
+        }
     }
 }

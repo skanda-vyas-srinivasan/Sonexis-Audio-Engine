@@ -87,6 +87,20 @@ Diagnostics print:
 
 After a successful rebuild, all three should identify the same output device.
 
+## Shutdown
+
+Press `Control-C` to stop the app. Shutdown logs confirm that the app:
+
+1. Removes the default-output route listener.
+2. Stops the tap aggregate IOProc.
+3. Stops the playback output IOProc.
+4. Destroys both IOProc IDs.
+5. Destroys the private aggregate device.
+6. Destroys the Process Tap.
+7. Frees the realtime ring buffer.
+
+The expected audible result is that normal system audio returns immediately after exit.
+
 ## Current Limitations
 
 - Captures stream index 0 of the selected output device only.

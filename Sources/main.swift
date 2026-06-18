@@ -8,7 +8,7 @@ let requiredVersion = OperatingSystemVersion(
 )
 
 guard ProcessInfo.processInfo.isOperatingSystemAtLeast(requiredVersion) else {
-    fputs("ProcessTapRMS requires macOS 14.4 or newer.\n", stderr)
+    fputs("ProcessTapDSP requires macOS 14.4 or newer.\n", stderr)
     exit(EXIT_FAILURE)
 }
 
@@ -17,8 +17,7 @@ let prototype = ProcessTapDSPPrototype()
 signal(SIGINT, SIG_IGN)
 let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 interruptSource.setEventHandler {
-    print("\nStopping...")
-    prototype.stop()
+    prototype.stop(reason: "SIGINT / Control-C")
     exit(EXIT_SUCCESS)
 }
 interruptSource.resume()
@@ -27,7 +26,7 @@ do {
     try prototype.start()
     RunLoop.main.run()
 } catch {
-    prototype.stop()
+    prototype.stop(reason: "startup failure")
 
     fputs("\(error)\n", stderr)
     if let coreAudioError = error as? CoreAudioError,
