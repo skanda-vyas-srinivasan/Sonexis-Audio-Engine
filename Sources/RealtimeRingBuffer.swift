@@ -46,14 +46,12 @@ final class RealtimeRingBuffer {
         SonexisAudioRingBufferSetReadEnabled(pointer, enabled)
     }
 
-    func configureBassBoost(enabled: Bool, sampleRate: Double, cutoffHz: Float, amount: Float) {
+    func configurePitchShift(enabled: Bool, semitones: Float) {
         guard let pointer else { return }
-        SonexisAudioRingBufferConfigureBassBoost(
+        SonexisAudioRingBufferConfigurePitchShift(
             pointer,
             enabled,
-            Float(sampleRate),
-            cutoffHz,
-            amount
+            semitones
         )
     }
 

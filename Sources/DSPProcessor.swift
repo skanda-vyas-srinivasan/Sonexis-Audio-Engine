@@ -3,9 +3,8 @@ import Foundation
 final class DSPProcessor {
     let processingGain: Float = 1.0
     let unityGain: Float = 1.0
-    let bassBoostEnabled = true
-    let bassBoostCutoffHz: Float = 160.0
-    let bassBoostAmount: Float = 1.0
+    let pitchShiftEnabled = true
+    let pitchShiftSemitones: Float = 7.0
     let startupRampDuration: TimeInterval = 0.40
     let shutdownRampDuration: TimeInterval = 0.25
     let routeChangeRampDuration: TimeInterval = 0.15
@@ -14,12 +13,10 @@ final class DSPProcessor {
         ringBuffer.setGainImmediate(unityGain)
     }
 
-    func configureBassBoost(on ringBuffer: RealtimeRingBuffer, sampleRate: Double) {
-        ringBuffer.configureBassBoost(
-            enabled: bassBoostEnabled,
-            sampleRate: sampleRate,
-            cutoffHz: bassBoostCutoffHz,
-            amount: bassBoostAmount
+    func configurePitchShift(on ringBuffer: RealtimeRingBuffer) {
+        ringBuffer.configurePitchShift(
+            enabled: pitchShiftEnabled,
+            semitones: pitchShiftSemitones
         )
     }
 

@@ -80,7 +80,7 @@ final class ProcessTapDSPApp {
             teardownPipeline(log: reason != "initial start", reason: "rebuild cleanup")
             try buildPipeline()
             printRouteDiagnostics(context: "after rebuild")
-            print("Started Process Tap -> bass boost DSP -> default output playback.")
+            print("Started Process Tap -> pitch-up DSP -> default output playback.")
             print("Play system audio in another app. Press Control-C to stop.")
         } catch {
             teardownPipeline(log: true, reason: "rebuild failure cleanup")
@@ -132,12 +132,12 @@ final class ProcessTapDSPApp {
             channels: channelCount
         )
         dspProcessor.configureInitialGain(on: createdRingBuffer)
-        dspProcessor.configureBassBoost(on: createdRingBuffer, sampleRate: activeSampleRate)
+        dspProcessor.configurePitchShift(on: createdRingBuffer)
         createdRingBuffer.setReadEnabled(false)
         ringBuffer = createdRingBuffer
         print("Created realtime ring buffer: \(ringCapacityFrames) frames, \(channelCount) channels")
         print("Initial gain: \(dspProcessor.unityGain); hardcoded target gain: \(dspProcessor.processingGain)")
-        print("Bass boost: enabled=\(dspProcessor.bassBoostEnabled), cutoff=\(dspProcessor.bassBoostCutoffHz) Hz, amount=\(dspProcessor.bassBoostAmount)")
+        print("Pitch shift: enabled=\(dspProcessor.pitchShiftEnabled), semitones=+\(dspProcessor.pitchShiftSemitones)")
         print("Startup preroll target: \(startupPrerollTargetFrames) frames")
 
         let outputEngine = AudioOutputEngine()
@@ -480,7 +480,7 @@ final class ProcessTapDSPApp {
             do {
                 try self.buildPipeline()
                 self.printRouteDiagnostics(context: "after rebuild")
-                print("Started Process Tap -> bass boost DSP -> default output playback.")
+                print("Started Process Tap -> pitch-up DSP -> default output playback.")
                 print("Play system audio in another app. Press Control-C to stop.")
             } catch {
                 self.handleRebuildFailure(

@@ -11,9 +11,10 @@
 
 struct SonexisAudioRingBuffer {
     float *samples;
-    float *bassBoostLowpassState;
+    float *pitchDelayLine;
     uint32_t capacityFrames;
     uint32_t channels;
+    uint32_t pitchDelayLineFrames;
     atomic_uint writeFrame;
     atomic_uint readFrame;
     atomic_ullong droppedFrames;
@@ -26,13 +27,16 @@ struct SonexisAudioRingBuffer {
     atomic_uint gainRampRequestID;
     atomic_uint currentGainPPM;
     atomic_bool readEnabled;
-    atomic_bool bassBoostEnabled;
+    atomic_bool pitchShiftEnabled;
     float currentGain;
     float rampTargetGain;
     uint32_t rampRemainingFrames;
     uint32_t appliedGainRampRequestID;
-    float bassBoostCoefficient;
-    float bassBoostAmount;
+    uint32_t pitchWriteFrame;
+    float pitchPhase;
+    float pitchPhaseIncrement;
+    float pitchMinDelayFrames;
+    float pitchDelayRangeFrames;
 };
 
 static float clampGain(float gain) {
@@ -107,8 +111,12 @@ SonexisAudioRingBuffer *SonexisAudioRingBufferCreate(uint32_t capacityFrames, ui
         return NULL;
     }
 
-    ringBuffer->bassBoostLowpassState = calloc((size_t)channels, sizeof(float));
-    if (ringBuffer->bassBoostLowpassState == NULL) {
+    ringBuffer->pitchDelayLineFrames = 4096;
+    ringBuffer->pitchDelayLine = calloc(
+        (size_t)ringBuffer->pitchDelayLineFrames * channels,
+        sizeof(float)
+    );
+    if (ringBuffer->pitchDelayLine == NULL) {
         free(ringBuffer->samples);
         free(ringBuffer);
         return NULL;
@@ -128,13 +136,16 @@ SonexisAudioRingBuffer *SonexisAudioRingBufferCreate(uint32_t capacityFrames, ui
     atomic_init(&ringBuffer->gainRampRequestID, 0);
     atomic_init(&ringBuffer->currentGainPPM, gainToPPM(1.0f));
     atomic_init(&ringBuffer->readEnabled, true);
-    atomic_init(&ringBuffer->bassBoostEnabled, false);
+    atomic_init(&ringBuffer->pitchShiftEnabled, false);
     ringBuffer->currentGain = 1.0f;
     ringBuffer->rampTargetGain = 1.0f;
     ringBuffer->rampRemainingFrames = 0;
     ringBuffer->appliedGainRampRequestID = 0;
-    ringBuffer->bassBoostCoefficient = 0.0f;
-    ringBuffer->bassBoostAmount = 0.0f;
+    ringBuffer->pitchWriteFrame = 0;
+    ringBuffer->pitchPhase = 0.0f;
+    ringBuffer->pitchPhaseIncrement = 0.0f;
+    ringBuffer->pitchMinDelayFrames = 256.0f;
+    ringBuffer->pitchDelayRangeFrames = 1792.0f;
 
     return ringBuffer;
 }
@@ -144,20 +155,58 @@ void SonexisAudioRingBufferDestroy(SonexisAudioRingBuffer *ringBuffer) {
         return;
     }
 
-    free(ringBuffer->bassBoostLowpassState);
+    free(ringBuffer->pitchDelayLine);
     free(ringBuffer->samples);
     free(ringBuffer);
 }
 
-static float processBassBoostSample(
+static float readPitchDelayLine(
+    SonexisAudioRingBuffer *ringBuffer,
+    uint32_t channel,
+    float delayFrames
+) {
+    float readPosition = (float)ringBuffer->pitchWriteFrame - delayFrames;
+    while (readPosition < 0.0f) {
+        readPosition += (float)ringBuffer->pitchDelayLineFrames;
+    }
+
+    uint32_t index0 = (uint32_t)readPosition;
+    uint32_t index1 = (index0 + 1) % ringBuffer->pitchDelayLineFrames;
+    float fraction = readPosition - (float)index0;
+    float sample0 = ringBuffer->pitchDelayLine[(index0 * ringBuffer->channels) + channel];
+    float sample1 = ringBuffer->pitchDelayLine[(index1 * ringBuffer->channels) + channel];
+    return sample0 + ((sample1 - sample0) * fraction);
+}
+
+static float processPitchShiftSample(
     SonexisAudioRingBuffer *ringBuffer,
     float inputSample,
-    uint32_t channel
+    uint32_t channel,
+    float phase
 ) {
-    float low = ringBuffer->bassBoostLowpassState[channel];
-    low += ringBuffer->bassBoostCoefficient * (inputSample - low);
-    ringBuffer->bassBoostLowpassState[channel] = low;
-    return inputSample + (low * ringBuffer->bassBoostAmount);
+    ringBuffer->pitchDelayLine[
+        (ringBuffer->pitchWriteFrame * ringBuffer->channels) + channel
+    ] = inputSample;
+
+    float phaseB = phase + 0.5f;
+    if (phaseB >= 1.0f) {
+        phaseB -= 1.0f;
+    }
+
+    float delayA = ringBuffer->pitchMinDelayFrames +
+        ((1.0f - phase) * ringBuffer->pitchDelayRangeFrames);
+    float delayB = ringBuffer->pitchMinDelayFrames +
+        ((1.0f - phaseB) * ringBuffer->pitchDelayRangeFrames);
+    float windowA = sinf((float)M_PI * phase);
+    float windowB = sinf((float)M_PI * phaseB);
+    float sampleA = readPitchDelayLine(ringBuffer, channel, delayA);
+    float sampleB = readPitchDelayLine(ringBuffer, channel, delayB);
+    float denominator = windowA + windowB;
+
+    if (denominator <= 0.000001f) {
+        return 0.0f;
+    }
+    return ((sampleA * windowA) + (sampleB * windowB)) / denominator;
 }
 
 uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
@@ -188,8 +237,8 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
     }
 
     float peak = 0.0f;
-    bool bassBoostEnabled = atomic_load_explicit(
-        &ringBuffer->bassBoostEnabled,
+    bool pitchShiftEnabled = atomic_load_explicit(
+        &ringBuffer->pitchShiftEnabled,
         memory_order_acquire
     );
     uint32_t requestID = atomic_load_explicit(&ringBuffer->gainRampRequestID, memory_order_acquire);
@@ -212,6 +261,7 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
         uint32_t outputBase = outputFrame * ringBuffer->channels;
         uint32_t outputChannel = 0;
         float frameGain = ringBuffer->currentGain;
+        float pitchPhase = ringBuffer->pitchPhase;
 
         if (ringBuffer->rampRemainingFrames > 0) {
             float step = (ringBuffer->rampTargetGain - ringBuffer->currentGain) /
@@ -246,11 +296,12 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
                     peak = absoluteSample;
                 }
                 float processedSample = inputSample;
-                if (bassBoostEnabled) {
-                    processedSample = processBassBoostSample(
+                if (pitchShiftEnabled) {
+                    processedSample = processPitchShiftSample(
                         ringBuffer,
                         inputSample,
-                        outputChannel
+                        outputChannel,
+                        pitchPhase
                     );
                 }
                 ringBuffer->samples[outputBase + outputChannel] = processedSample * frameGain;
@@ -260,15 +311,25 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
 
         while (outputChannel < ringBuffer->channels) {
             float processedSample = 0.0f;
-            if (bassBoostEnabled) {
-                processedSample = processBassBoostSample(
+            if (pitchShiftEnabled) {
+                processedSample = processPitchShiftSample(
                     ringBuffer,
                     0.0f,
-                    outputChannel
+                    outputChannel,
+                    pitchPhase
                 );
             }
             ringBuffer->samples[outputBase + outputChannel] = processedSample * frameGain;
             outputChannel += 1;
+        }
+
+        if (pitchShiftEnabled) {
+            ringBuffer->pitchWriteFrame =
+                (ringBuffer->pitchWriteFrame + 1) % ringBuffer->pitchDelayLineFrames;
+            ringBuffer->pitchPhase += ringBuffer->pitchPhaseIncrement;
+            while (ringBuffer->pitchPhase >= 1.0f) {
+                ringBuffer->pitchPhase -= 1.0f;
+            }
         }
     }
 
@@ -363,56 +424,49 @@ void SonexisAudioRingBufferSetReadEnabled(SonexisAudioRingBuffer *ringBuffer, bo
     atomic_store_explicit(&ringBuffer->readEnabled, enabled, memory_order_release);
 }
 
-void SonexisAudioRingBufferConfigureBassBoost(
+void SonexisAudioRingBufferConfigurePitchShift(
     SonexisAudioRingBuffer *ringBuffer,
     bool enabled,
-    float sampleRate,
-    float cutoffHz,
-    float amount
+    float semitones
 ) {
     if (ringBuffer == NULL) {
         return;
     }
 
-    if (!enabled || sampleRate <= 0.0f || cutoffHz <= 0.0f || amount <= 0.0f) {
-        ringBuffer->bassBoostCoefficient = 0.0f;
-        ringBuffer->bassBoostAmount = 0.0f;
+    if (!enabled || semitones <= 0.0f) {
+        ringBuffer->pitchPhase = 0.0f;
+        ringBuffer->pitchPhaseIncrement = 0.0f;
+        ringBuffer->pitchWriteFrame = 0;
         memset(
-            ringBuffer->bassBoostLowpassState,
+            ringBuffer->pitchDelayLine,
             0,
-            (size_t)ringBuffer->channels * sizeof(float)
+            (size_t)ringBuffer->pitchDelayLineFrames *
+                ringBuffer->channels *
+                sizeof(float)
         );
-        atomic_store_explicit(&ringBuffer->bassBoostEnabled, false, memory_order_release);
+        atomic_store_explicit(&ringBuffer->pitchShiftEnabled, false, memory_order_release);
         return;
     }
 
-    float nyquist = sampleRate * 0.5f;
-    float safeCutoffHz = cutoffHz;
-    if (safeCutoffHz > nyquist) {
-        safeCutoffHz = nyquist;
+    float safeSemitones = semitones;
+    if (safeSemitones > 12.0f) {
+        safeSemitones = 12.0f;
     }
 
-    float coefficient = 1.0f - expf(-2.0f * (float)M_PI * safeCutoffHz / sampleRate);
-    if (coefficient < 0.0f) {
-        coefficient = 0.0f;
-    }
-    if (coefficient > 1.0f) {
-        coefficient = 1.0f;
-    }
-
-    float safeAmount = amount;
-    if (safeAmount > 2.0f) {
-        safeAmount = 2.0f;
-    }
+    float pitchRatio = powf(2.0f, safeSemitones / 12.0f);
+    float phaseIncrement = (pitchRatio - 1.0f) / ringBuffer->pitchDelayRangeFrames;
 
     memset(
-        ringBuffer->bassBoostLowpassState,
+        ringBuffer->pitchDelayLine,
         0,
-        (size_t)ringBuffer->channels * sizeof(float)
+        (size_t)ringBuffer->pitchDelayLineFrames *
+            ringBuffer->channels *
+            sizeof(float)
     );
-    ringBuffer->bassBoostCoefficient = coefficient;
-    ringBuffer->bassBoostAmount = safeAmount;
-    atomic_store_explicit(&ringBuffer->bassBoostEnabled, true, memory_order_release);
+    ringBuffer->pitchPhase = 0.0f;
+    ringBuffer->pitchPhaseIncrement = phaseIncrement;
+    ringBuffer->pitchWriteFrame = 0;
+    atomic_store_explicit(&ringBuffer->pitchShiftEnabled, true, memory_order_release);
 }
 
 uint32_t SonexisAudioRingBufferGetFillFrames(SonexisAudioRingBuffer *ringBuffer) {
