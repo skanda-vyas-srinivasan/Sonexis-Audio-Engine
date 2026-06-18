@@ -16,6 +16,12 @@ struct PrototypeError: Error, CustomStringConvertible {
     var description: String { message }
 }
 
+struct NoDefaultOutputDeviceError: Error, CustomStringConvertible {
+    var description: String {
+        "No default output device is available"
+    }
+}
+
 func checkOSStatus(_ status: OSStatus, operation: String) throws {
     guard status == noErr else {
         throw CoreAudioError(operation: operation, status: status)
@@ -161,7 +167,7 @@ enum CoreAudioSupport {
         )
 
         guard deviceID != kAudioObjectUnknown else {
-            throw PrototypeError(message: "No default output device is available")
+            throw NoDefaultOutputDeviceError()
         }
         return deviceID
     }

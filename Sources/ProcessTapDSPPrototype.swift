@@ -1,3 +1,4 @@
+import AppKit
 import CoreAudio
 import Foundation
 
@@ -10,6 +11,9 @@ private let startupRampDuration: TimeInterval = 0.40
 private let shutdownRampDuration: TimeInterval = 0.25
 private let routeChangeRampDuration: TimeInterval = 0.15
 private let rampSettleDuration: TimeInterval = 0.03
+private let wakeRebuildDelay: TimeInterval = 1.0
+private let rebuildRetryDelay: TimeInterval = 1.5
+private let rebuildRetryLimit = 4
 
 private func tapInputIOProc(
     _ inDevice: AudioObjectID,
@@ -54,9 +58,13 @@ final class ProcessTapDSPPrototype {
     private var ringBuffer: OpaquePointer?
     private var statusTimer: DispatchSourceTimer?
     private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
+    private var activeDeviceAliveListenerBlock: AudioObjectPropertyListenerBlock?
+    private var activeDeviceAliveListenerDeviceID: AudioDeviceID = kAudioObjectUnknown
     private var routeChangeWorkItem: DispatchWorkItem?
+    private var recoveryWorkItem: DispatchWorkItem?
     private var smoothTeardownWorkItem: DispatchWorkItem?
     private var startupPrerollTimer: DispatchSourceTimer?
+    private var sleepWakeObservers: [NSObjectProtocol] = []
     private var activeTapSourceDevice: AudioDeviceSummary?
     private var activePlaybackDevice: AudioDeviceSummary?
     private var activeSampleRate: Double = 48_000.0
@@ -64,10 +72,13 @@ final class ProcessTapDSPPrototype {
     private var lastReadFrames: UInt64 = 0
     private var statusTick: UInt64 = 0
     private var isStopped = true
+    private var isSuspendedForSleep = false
 
     func start() throws {
         isStopped = false
+        isSuspendedForSleep = false
         try installDefaultOutputListener()
+        installSleepWakeObservers()
         try rebuildPipeline(reason: "initial start")
     }
 
@@ -87,6 +98,12 @@ final class ProcessTapDSPPrototype {
             print("Cleanup: canceled pending route-change rebuild.")
         }
         routeChangeWorkItem = nil
+        if recoveryWorkItem != nil {
+            recoveryWorkItem?.cancel()
+            print("Cleanup: canceled pending recovery rebuild.")
+        }
+        recoveryWorkItem = nil
+        removeSleepWakeObservers(log: true)
         removeDefaultOutputListener(log: true)
         smoothTeardownPipeline(log: true, reason: reason, rampDuration: shutdownRampDuration) {
             print("Shutdown complete. Normal system audio should be restored.")
@@ -208,6 +225,7 @@ final class ProcessTapDSPPrototype {
         print("Created private aggregate device: AudioDeviceID \(tapAggregateDeviceID)")
 
         try createIOProcs()
+        try installActiveDeviceAliveListener(deviceID: defaultOutputDeviceID)
         try startIO()
         scheduleStartupPreroll(context: "pipeline start")
 
@@ -334,6 +352,7 @@ final class ProcessTapDSPPrototype {
         }
 
         cancelStartupPreroll(enableRead: false, log: log)
+        removeActiveDeviceAliveListener(log: log)
 
         if statusTimer != nil {
             statusTimer?.cancel()
@@ -488,7 +507,7 @@ final class ProcessTapDSPPrototype {
 
         var address = defaultOutputDeviceAddress()
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.scheduleRouteRebuild()
+            self?.scheduleRouteRebuild(reason: "default output changed")
         }
 
         try checkOSStatus(
@@ -518,27 +537,130 @@ final class ProcessTapDSPPrototype {
         self.defaultOutputListenerBlock = nil
     }
 
-    private func scheduleRouteRebuild() {
+    private func installActiveDeviceAliveListener(deviceID: AudioDeviceID) throws {
+        removeActiveDeviceAliveListener(log: false)
+
+        var address = activeDeviceAliveAddress()
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.scheduleRouteRebuild(reason: "active output device availability changed")
+        }
+
+        try checkOSStatus(
+            AudioObjectAddPropertyListenerBlock(
+                deviceID,
+                &address,
+                DispatchQueue.main,
+                block
+            ),
+            operation: "Install active output device alive listener"
+        )
+
+        activeDeviceAliveListenerBlock = block
+        activeDeviceAliveListenerDeviceID = deviceID
+    }
+
+    private func removeActiveDeviceAliveListener(log: Bool = false) {
+        guard let activeDeviceAliveListenerBlock,
+              activeDeviceAliveListenerDeviceID != kAudioObjectUnknown else {
+            return
+        }
+
+        var address = activeDeviceAliveAddress()
+        let status = AudioObjectRemovePropertyListenerBlock(
+            activeDeviceAliveListenerDeviceID,
+            &address,
+            DispatchQueue.main,
+            activeDeviceAliveListenerBlock
+        )
+        if log { printCleanupResult("removed active output device alive listener", status: status) }
+        self.activeDeviceAliveListenerBlock = nil
+        activeDeviceAliveListenerDeviceID = kAudioObjectUnknown
+    }
+
+    private func installSleepWakeObservers() {
+        guard sleepWakeObservers.isEmpty else { return }
+
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        let willSleep = notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleSystemWillSleep()
+        }
+        let didWake = notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleSystemDidWake()
+        }
+        sleepWakeObservers = [willSleep, didWake]
+        print("Installed sleep/wake observers.")
+    }
+
+    private func removeSleepWakeObservers(log: Bool = false) {
+        guard !sleepWakeObservers.isEmpty else { return }
+
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        for observer in sleepWakeObservers {
+            notificationCenter.removeObserver(observer)
+        }
+        sleepWakeObservers.removeAll()
+        if log { print("Cleanup: removed sleep/wake observers.") }
+    }
+
+    private func handleSystemWillSleep() {
         guard !isStopped else { return }
 
         routeChangeWorkItem?.cancel()
+        routeChangeWorkItem = nil
+        recoveryWorkItem?.cancel()
+        recoveryWorkItem = nil
+        isSuspendedForSleep = true
+
+        print("")
+        print("System sleep notification received.")
+        printRouteDiagnostics(context: "before sleep")
+
+        smoothTeardownPipeline(log: true, reason: "system sleep", rampDuration: routeChangeRampDuration) {
+            print("Sleep: audio pipeline stopped. It will rebuild after wake.")
+        }
+    }
+
+    private func handleSystemDidWake() {
+        guard !isStopped else { return }
+
+        isSuspendedForSleep = false
+        print("")
+        print("System wake notification received.")
+        scheduleRecoveryRebuild(reason: "system wake", delay: wakeRebuildDelay, attemptsRemaining: rebuildRetryLimit)
+    }
+
+    private func scheduleRouteRebuild(reason: String) {
+        guard !isStopped, !isSuspendedForSleep else { return }
+
+        routeChangeWorkItem?.cancel()
+        recoveryWorkItem?.cancel()
+        recoveryWorkItem = nil
+
         let workItem = DispatchWorkItem { [weak self] in
-            self?.handleRouteChange()
+            self?.handleRouteChange(reason: reason)
         }
         routeChangeWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
     }
 
-    private func handleRouteChange() {
-        guard !isStopped else { return }
+    private func handleRouteChange(reason: String) {
+        guard !isStopped, !isSuspendedForSleep else { return }
         routeChangeWorkItem = nil
 
         print("")
-        print("Default output device change detected.")
+        print("Route change detected: \(reason).")
         printRouteDiagnostics(context: "route-change notification")
 
         smoothTeardownPipeline(log: true, reason: "route-change rebuild", rampDuration: routeChangeRampDuration) { [weak self] in
-            guard let self, !self.isStopped else { return }
+            guard let self, !self.isStopped, !self.isSuspendedForSleep else { return }
 
             do {
                 try self.buildPipeline()
@@ -546,11 +668,73 @@ final class ProcessTapDSPPrototype {
                 print("Started Process Tap -> gain DSP -> default output playback.")
                 print("Play system audio in another app. Press Control-C to stop.")
             } catch {
-                self.teardownPipeline(log: true, reason: "route rebuild failure cleanup")
-                print("Route rebuild failed: \(error)")
-                print("The pipeline is stopped; normal system output should be unmuted. Change routes again or restart the app to retry.")
+                self.handleRebuildFailure(
+                    error,
+                    reason: reason,
+                    retryAttemptsRemaining: rebuildRetryLimit
+                )
             }
         }
+    }
+
+    private func scheduleRecoveryRebuild(
+        reason: String,
+        delay: TimeInterval,
+        attemptsRemaining: Int
+    ) {
+        guard !isStopped, !isSuspendedForSleep else { return }
+
+        recoveryWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.attemptRecoveryRebuild(reason: reason, attemptsRemaining: attemptsRemaining)
+        }
+        recoveryWorkItem = workItem
+
+        let milliseconds = Int((delay * 1000.0).rounded())
+        print("Recovery: scheduling rebuild for \(reason) in \(milliseconds) ms.")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func attemptRecoveryRebuild(reason: String, attemptsRemaining: Int) {
+        guard !isStopped, !isSuspendedForSleep else { return }
+        recoveryWorkItem = nil
+
+        print("")
+        print("Recovery: attempting rebuild (\(reason)); attempts remaining after this: \(attemptsRemaining).")
+        printRouteDiagnostics(context: "before recovery rebuild")
+
+        do {
+            try rebuildPipeline(reason: reason)
+            print("Recovery: rebuild succeeded.")
+        } catch {
+            handleRebuildFailure(error, reason: reason, retryAttemptsRemaining: attemptsRemaining)
+        }
+    }
+
+    private func handleRebuildFailure(
+        _ error: Error,
+        reason: String,
+        retryAttemptsRemaining: Int
+    ) {
+        teardownPipeline(log: true, reason: "rebuild failure cleanup")
+        print("Rebuild failed (\(reason)): \(error)")
+
+        if error is NoDefaultOutputDeviceError {
+            print("No output device is currently available. The pipeline is stopped and normal system audio should be unmuted.")
+            print("Connect or select an output device; the default-output listener will retry when Core Audio reports a route.")
+            return
+        }
+
+        guard retryAttemptsRemaining > 0 else {
+            print("Recovery retries exhausted. Change routes again or restart the app to retry.")
+            return
+        }
+
+        scheduleRecoveryRebuild(
+            reason: reason,
+            delay: rebuildRetryDelay,
+            attemptsRemaining: retryAttemptsRemaining - 1
+        )
     }
 
     private func startStatusTimer() {
@@ -622,6 +806,14 @@ final class ProcessTapDSPPrototype {
     private func defaultOutputDeviceAddress() -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    private func activeDeviceAliveAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )

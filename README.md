@@ -88,6 +88,16 @@ Diagnostics print:
 
 After a successful rebuild, all three should identify the same output device.
 
+## Sleep/Wake And Disconnects
+
+The prototype uses `NSWorkspace` sleep/wake notifications and a Core Audio device-alive listener on the active output device.
+
+On sleep, the app ramps back toward unity and tears down the Process Tap, aggregate device, IOProcs, and ring buffer. On wake, it waits briefly for Core Audio routes to settle and attempts to rebuild the pipeline.
+
+If an output route disappears or temporarily fails to rebuild, the app leaves the pipeline stopped and unmuted, then retries transient failures. If Core Audio reports no default output device, the app logs a graceful stopped state and waits for the default-output listener to fire again.
+
+Manual validation checklist: [MILESTONE_4_TESTS.md](MILESTONE_4_TESTS.md).
+
 ## Shutdown
 
 Press `Control-C` to stop the app. Shutdown logs confirm that the app:
@@ -114,7 +124,7 @@ The expected audible result is that normal system audio returns without a sudden
 - No configurable DSP.
 - No Audio Unit, VST, or plugin hosting.
 - No app sandbox support has been validated.
-- No sleep/wake or device-disconnect hardening yet.
+- Sleep/wake and device-disconnect recovery are best-effort and need systematic manual testing on each hardware route.
 - Bluetooth, AirPods, HDMI, and aggregate-device behavior still need systematic manual testing.
 
 ## Source Layout

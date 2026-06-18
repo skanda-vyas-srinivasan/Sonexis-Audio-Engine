@@ -24,6 +24,7 @@ SWIFT_FLAGS := \
 	-target $(ARCH)-apple-macos$(DEPLOYMENT_TARGET) \
 	-module-cache-path $(MODULE_CACHE) \
 	-import-objc-header Sources/RealtimeAudioRing.h \
+	-framework AppKit \
 	-framework CoreAudio
 
 C_FLAGS := \

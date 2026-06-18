@@ -82,6 +82,16 @@ The app handles this by rebuilding the whole pipeline rather than mutating the e
 - ring buffer;
 - source/playback diagnostics.
 
+## Sleep/Wake And Disconnects
+
+The app uses `NSWorkspace.willSleepNotification` and `NSWorkspace.didWakeNotification` from AppKit. This keeps the prototype headless but adds an AppKit framework dependency.
+
+On sleep, the app cancels pending route/recovery work, marks the pipeline as suspended, and tears down the active Core Audio objects through the same smooth ramp path used for route changes. On wake, it waits briefly before attempting a full rebuild so Core Audio has time to publish the post-wake default output route.
+
+The app also installs `kAudioDevicePropertyDeviceIsAlive` on the active output device. If the active device disappears before or without a default-output property change, that listener schedules the same full route rebuild path.
+
+If rebuild fails because no default output device exists, the app leaves the pipeline stopped and unmuted. The default-output listener remains installed so connecting or selecting a route can trigger recovery. Other transient rebuild failures are retried a small number of times before the app logs that manual route change or restart is needed.
+
 ## Feedback Prevention
 
 The app excludes its own HAL process object from the tap and verifies the installed tap description after creation. If verification fails, playback does not start.
