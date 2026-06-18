@@ -57,13 +57,13 @@ Expected signs of success:
 
 - Audio remains on the normal selected output device.
 - Audio becomes much quieter because the hardcoded gain is `0.1`.
-- Pressing `Control-C` stops the app and normal output volume returns.
+- Pressing `Control-C` briefly ramps processed playback back to unity gain, then stops the app and returns normal system output.
 - Terminal diagnostics show nonzero `in/s`, nonzero `out/s`, and input peak above silence while source audio is playing.
 
 Example diagnostic:
 
 ```text
-ring fill: 512 frames, in/s: 48000, out/s: 48000, input peak: -12.4 dBFS, dropped: 0, underflow: 0
+ring fill: 512 frames, in/s: 48000, out/s: 48000, input peak: -12.4 dBFS, gain: 0.100, dropped: 0, underflow: 0
 ```
 
 ## Route Changes
@@ -92,14 +92,15 @@ After a successful rebuild, all three should identify the same output device.
 Press `Control-C` to stop the app. Shutdown logs confirm that the app:
 
 1. Removes the default-output route listener.
-2. Stops the tap aggregate IOProc.
-3. Stops the playback output IOProc.
-4. Destroys both IOProc IDs.
-5. Destroys the private aggregate device.
-6. Destroys the Process Tap.
-7. Frees the realtime ring buffer.
+2. Ramps processed playback from the hardcoded gain back to unity gain over a short realtime-safe ramp.
+3. Stops the tap aggregate IOProc.
+4. Stops the playback output IOProc.
+5. Destroys both IOProc IDs.
+6. Destroys the private aggregate device.
+7. Destroys the Process Tap.
+8. Frees the realtime ring buffer.
 
-The expected audible result is that normal system audio returns immediately after exit.
+The expected audible result is that normal system audio returns without a sudden quiet-to-loud jump when the tap releases `CATapMutedWhenTapped`.
 
 ## Current Limitations
 

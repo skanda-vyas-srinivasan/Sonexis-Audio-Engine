@@ -1,7 +1,11 @@
 import CoreAudio
 import Foundation
 
-private let hardcodedGain: Float = 0.1
+private let processingGain: Float = 0.1
+private let unityGain: Float = 1.0
+private let shutdownRampDuration: TimeInterval = 0.25
+private let routeChangeRampDuration: TimeInterval = 0.15
+private let rampSettleDuration: TimeInterval = 0.03
 
 private func tapInputIOProc(
     _ inDevice: AudioObjectID,
@@ -47,8 +51,10 @@ final class ProcessTapDSPPrototype {
     private var statusTimer: DispatchSourceTimer?
     private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
     private var routeChangeWorkItem: DispatchWorkItem?
+    private var smoothTeardownWorkItem: DispatchWorkItem?
     private var activeTapSourceDevice: AudioDeviceSummary?
     private var activePlaybackDevice: AudioDeviceSummary?
+    private var activeSampleRate: Double = 48_000.0
     private var lastWrittenFrames: UInt64 = 0
     private var lastReadFrames: UInt64 = 0
     private var statusTick: UInt64 = 0
@@ -60,12 +66,13 @@ final class ProcessTapDSPPrototype {
         try rebuildPipeline(reason: "initial start")
     }
 
-    func stop(reason: String = "shutdown") {
+    func stop(reason: String = "shutdown", completion: @escaping () -> Void = {}) {
         print("")
         print("Stopping ProcessTapDSP: \(reason)")
 
         if isStopped {
             print("Shutdown skipped: app is already stopped.")
+            completion()
             return
         }
 
@@ -76,16 +83,17 @@ final class ProcessTapDSPPrototype {
         }
         routeChangeWorkItem = nil
         removeDefaultOutputListener(log: true)
-        teardownPipeline(log: true, reason: reason)
-        print("Shutdown complete. Normal system audio should be restored.")
+        smoothTeardownPipeline(log: true, reason: reason, rampDuration: shutdownRampDuration) {
+            print("Shutdown complete. Normal system audio should be restored.")
+            completion()
+        }
     }
 
     fileprivate func captureCallback(inputData: UnsafePointer<AudioBufferList>) {
         guard let ringBuffer else { return }
         _ = SonexisAudioRingBufferWriteFromAudioBufferList(
             ringBuffer,
-            inputData,
-            hardcodedGain
+            inputData
         )
     }
 
@@ -167,6 +175,7 @@ final class ProcessTapDSPPrototype {
 
         let tapFormat = try CoreAudioSupport.tapFormat(tapID)
         print("Tap format: \(tapFormat.formatSummary)")
+        activeSampleRate = tapFormat.mSampleRate
         guard tapFormat.isPlaybackCompatible(with: outputStreamFormat) else {
             throw PrototypeError(
                 message: "This PoC requires matching Float32 tap/output formats and does not perform sample-rate conversion. Tap: \(tapFormat.formatSummary). Output: \(outputStreamFormat.formatSummary)"
@@ -182,9 +191,10 @@ final class ProcessTapDSPPrototype {
         guard let createdRingBuffer = SonexisAudioRingBufferCreate(ringCapacityFrames, channelCount) else {
             throw PrototypeError(message: "Could not allocate realtime audio ring buffer")
         }
+        SonexisAudioRingBufferSetGainImmediate(createdRingBuffer, processingGain)
         ringBuffer = createdRingBuffer
         print("Created realtime ring buffer: \(ringCapacityFrames) frames, \(channelCount) channels")
-        print("Hardcoded gain: \(hardcodedGain)")
+        print("Hardcoded gain: \(processingGain)")
 
         let tapUID = try CoreAudioSupport.tapUID(tapID)
         tapAggregateDeviceID = try createPrivateAggregateDevice(tapUID: tapUID)
@@ -196,6 +206,44 @@ final class ProcessTapDSPPrototype {
         activeTapSourceDevice = defaultOutput
         activePlaybackDevice = defaultOutput
         startStatusTimer()
+    }
+
+    private func smoothTeardownPipeline(
+        log: Bool,
+        reason: String,
+        rampDuration: TimeInterval,
+        completion: @escaping () -> Void
+    ) {
+        smoothTeardownWorkItem?.cancel()
+        smoothTeardownWorkItem = nil
+
+        guard let ringBuffer else {
+            teardownPipeline(log: log, reason: reason)
+            completion()
+            return
+        }
+
+        let rampFrames = max(UInt32((activeSampleRate * rampDuration).rounded(.up)), 1)
+        if log {
+            let milliseconds = Int((rampDuration * 1000.0).rounded())
+            print("Cleanup: ramping processed gain to unity over \(milliseconds) ms before releasing Process Tap.")
+        }
+        SonexisAudioRingBufferRequestGainRamp(ringBuffer, unityGain, rampFrames)
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+            self.smoothTeardownWorkItem = nil
+            self.teardownPipeline(log: log, reason: reason)
+            completion()
+        }
+        smoothTeardownWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + rampDuration + rampSettleDuration,
+            execute: workItem
+        )
     }
 
     private func teardownPipeline(log: Bool = false, reason: String = "pipeline teardown") {
@@ -266,6 +314,7 @@ final class ProcessTapDSPPrototype {
         defaultOutputDeviceID = kAudioObjectUnknown
         activeTapSourceDevice = nil
         activePlaybackDevice = nil
+        activeSampleRate = 48_000.0
         lastWrittenFrames = 0
         lastReadFrames = 0
         statusTick = 0
@@ -404,11 +453,19 @@ final class ProcessTapDSPPrototype {
         print("Default output device change detected.")
         printRouteDiagnostics(context: "route-change notification")
 
-        do {
-            try rebuildPipeline(reason: "default output changed")
-        } catch {
-            print("Route rebuild failed: \(error)")
-            print("The pipeline is stopped; normal system output should be unmuted. Change routes again or restart the app to retry.")
+        smoothTeardownPipeline(log: true, reason: "route-change rebuild", rampDuration: routeChangeRampDuration) { [weak self] in
+            guard let self, !self.isStopped else { return }
+
+            do {
+                try self.buildPipeline()
+                self.printRouteDiagnostics(context: "after rebuild")
+                print("Started Process Tap -> gain DSP -> default output playback.")
+                print("Play system audio in another app. Press Control-C to stop.")
+            } catch {
+                self.teardownPipeline(log: true, reason: "route rebuild failure cleanup")
+                print("Route rebuild failed: \(error)")
+                print("The pipeline is stopped; normal system output should be unmuted. Change routes again or restart the app to retry.")
+            }
         }
     }
 
@@ -424,6 +481,7 @@ final class ProcessTapDSPPrototype {
             let written = SonexisAudioRingBufferGetWrittenFrames(ringBuffer)
             let read = SonexisAudioRingBufferGetReadFrames(ringBuffer)
             let peakPPM = SonexisAudioRingBufferGetLastInputPeakPPM(ringBuffer)
+            let gainPPM = SonexisAudioRingBufferGetCurrentGainPPM(ringBuffer)
             let writtenDelta = written - lastWrittenFrames
             let readDelta = read - lastReadFrames
             lastWrittenFrames = written
@@ -431,13 +489,15 @@ final class ProcessTapDSPPrototype {
 
             let peak = max(Double(peakPPM) / 1_000_000.0, 1.0e-12)
             let peakDB = 20.0 * log10(peak)
+            let gain = Double(gainPPM) / 1_000_000.0
             print(
                 String(
-                    format: "ring fill: %u frames, in/s: %llu, out/s: %llu, input peak: %.1f dBFS, dropped: %llu, underflow: %llu",
+                    format: "ring fill: %u frames, in/s: %llu, out/s: %llu, input peak: %.1f dBFS, gain: %.3f, dropped: %llu, underflow: %llu",
                     fill,
                     writtenDelta,
                     readDelta,
                     peakDB,
+                    gain,
                     dropped,
                     underflows
                 )

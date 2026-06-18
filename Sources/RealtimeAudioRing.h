@@ -12,8 +12,7 @@ void SonexisAudioRingBufferDestroy(SonexisAudioRingBuffer *ringBuffer);
 
 uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
     SonexisAudioRingBuffer *ringBuffer,
-    const AudioBufferList *inputData,
-    float gain
+    const AudioBufferList *inputData
 );
 
 uint32_t SonexisAudioRingBufferReadToAudioBufferList(
@@ -27,5 +26,8 @@ uint64_t SonexisAudioRingBufferGetUnderflowFrames(SonexisAudioRingBuffer *ringBu
 uint64_t SonexisAudioRingBufferGetWrittenFrames(SonexisAudioRingBuffer *ringBuffer);
 uint64_t SonexisAudioRingBufferGetReadFrames(SonexisAudioRingBuffer *ringBuffer);
 uint32_t SonexisAudioRingBufferGetLastInputPeakPPM(SonexisAudioRingBuffer *ringBuffer);
+void SonexisAudioRingBufferSetGainImmediate(SonexisAudioRingBuffer *ringBuffer, float gain);
+void SonexisAudioRingBufferRequestGainRamp(SonexisAudioRingBuffer *ringBuffer, float targetGain, uint32_t rampFrames);
+uint32_t SonexisAudioRingBufferGetCurrentGainPPM(SonexisAudioRingBuffer *ringBuffer);
 
 #endif

@@ -16,7 +16,33 @@ struct SonexisAudioRingBuffer {
     atomic_ullong writtenFrames;
     atomic_ullong readFrames;
     atomic_uint lastInputPeakPPM;
+    atomic_uint requestedTargetGainPPM;
+    atomic_uint requestedRampFrames;
+    atomic_uint gainRampRequestID;
+    atomic_uint currentGainPPM;
+    float currentGain;
+    float rampTargetGain;
+    uint32_t rampRemainingFrames;
+    uint32_t appliedGainRampRequestID;
 };
+
+static float clampGain(float gain) {
+    if (gain < 0.0f) {
+        return 0.0f;
+    }
+    if (gain > 4.0f) {
+        return 4.0f;
+    }
+    return gain;
+}
+
+static uint32_t gainToPPM(float gain) {
+    return (uint32_t)(clampGain(gain) * 1000000.0f);
+}
+
+static float ppmToGain(uint32_t ppm) {
+    return (float)ppm / 1000000.0f;
+}
 
 static uint32_t minimumFrameCountInAudioBufferList(const AudioBufferList *bufferList) {
     if (bufferList == NULL || bufferList->mNumberBuffers == 0) {
@@ -81,6 +107,14 @@ SonexisAudioRingBuffer *SonexisAudioRingBufferCreate(uint32_t capacityFrames, ui
     atomic_init(&ringBuffer->writtenFrames, 0);
     atomic_init(&ringBuffer->readFrames, 0);
     atomic_init(&ringBuffer->lastInputPeakPPM, 0);
+    atomic_init(&ringBuffer->requestedTargetGainPPM, gainToPPM(1.0f));
+    atomic_init(&ringBuffer->requestedRampFrames, 0);
+    atomic_init(&ringBuffer->gainRampRequestID, 0);
+    atomic_init(&ringBuffer->currentGainPPM, gainToPPM(1.0f));
+    ringBuffer->currentGain = 1.0f;
+    ringBuffer->rampTargetGain = 1.0f;
+    ringBuffer->rampRemainingFrames = 0;
+    ringBuffer->appliedGainRampRequestID = 0;
 
     return ringBuffer;
 }
@@ -96,8 +130,7 @@ void SonexisAudioRingBufferDestroy(SonexisAudioRingBuffer *ringBuffer) {
 
 uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
     SonexisAudioRingBuffer *ringBuffer,
-    const AudioBufferList *inputData,
-    float gain
+    const AudioBufferList *inputData
 ) {
     if (ringBuffer == NULL || inputData == NULL) {
         return 0;
@@ -123,11 +156,39 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
     }
 
     float peak = 0.0f;
+    uint32_t requestID = atomic_load_explicit(&ringBuffer->gainRampRequestID, memory_order_acquire);
+    if (requestID != ringBuffer->appliedGainRampRequestID) {
+        ringBuffer->appliedGainRampRequestID = requestID;
+        ringBuffer->rampTargetGain = ppmToGain(
+            atomic_load_explicit(&ringBuffer->requestedTargetGainPPM, memory_order_relaxed)
+        );
+        ringBuffer->rampRemainingFrames = atomic_load_explicit(
+            &ringBuffer->requestedRampFrames,
+            memory_order_relaxed
+        );
+        if (ringBuffer->rampRemainingFrames == 0) {
+            ringBuffer->currentGain = ringBuffer->rampTargetGain;
+        }
+    }
 
     for (uint32_t frame = 0; frame < framesToWrite; ++frame) {
         uint32_t outputFrame = (writeFrame + frame) % ringBuffer->capacityFrames;
         uint32_t outputBase = outputFrame * ringBuffer->channels;
         uint32_t outputChannel = 0;
+        float frameGain = ringBuffer->currentGain;
+
+        if (ringBuffer->rampRemainingFrames > 0) {
+            float step = (ringBuffer->rampTargetGain - ringBuffer->currentGain) /
+                (float)ringBuffer->rampRemainingFrames;
+            ringBuffer->currentGain += step;
+            ringBuffer->rampRemainingFrames -= 1;
+            frameGain = ringBuffer->currentGain;
+
+            if (ringBuffer->rampRemainingFrames == 0) {
+                ringBuffer->currentGain = ringBuffer->rampTargetGain;
+                frameGain = ringBuffer->currentGain;
+            }
+        }
 
         for (uint32_t bufferIndex = 0; bufferIndex < inputData->mNumberBuffers; ++bufferIndex) {
             const AudioBuffer *buffer = &inputData->mBuffers[bufferIndex];
@@ -148,7 +209,7 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
                 if (absoluteSample > peak) {
                     peak = absoluteSample;
                 }
-                ringBuffer->samples[outputBase + outputChannel] = inputSample * gain;
+                ringBuffer->samples[outputBase + outputChannel] = inputSample * frameGain;
                 outputChannel += 1;
             }
         }
@@ -164,6 +225,11 @@ uint32_t SonexisAudioRingBufferWriteFromAudioBufferList(
     atomic_fetch_add_explicit(
         &ringBuffer->writtenFrames,
         (unsigned long long)framesToWrite,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &ringBuffer->currentGainPPM,
+        gainToPPM(ringBuffer->currentGain),
         memory_order_relaxed
     );
     atomic_store_explicit(&ringBuffer->writeFrame, writeFrame + framesToWrite, memory_order_release);
@@ -282,4 +348,42 @@ uint32_t SonexisAudioRingBufferGetLastInputPeakPPM(SonexisAudioRingBuffer *ringB
     }
 
     return atomic_load_explicit(&ringBuffer->lastInputPeakPPM, memory_order_relaxed);
+}
+
+void SonexisAudioRingBufferSetGainImmediate(SonexisAudioRingBuffer *ringBuffer, float gain) {
+    if (ringBuffer == NULL) {
+        return;
+    }
+
+    float clampedGain = clampGain(gain);
+    uint32_t gainPPM = gainToPPM(clampedGain);
+    ringBuffer->currentGain = clampedGain;
+    ringBuffer->rampTargetGain = clampedGain;
+    ringBuffer->rampRemainingFrames = 0;
+    atomic_store_explicit(&ringBuffer->requestedTargetGainPPM, gainPPM, memory_order_relaxed);
+    atomic_store_explicit(&ringBuffer->requestedRampFrames, 0, memory_order_relaxed);
+    atomic_store_explicit(&ringBuffer->currentGainPPM, gainPPM, memory_order_relaxed);
+    atomic_fetch_add_explicit(&ringBuffer->gainRampRequestID, 1, memory_order_release);
+}
+
+void SonexisAudioRingBufferRequestGainRamp(SonexisAudioRingBuffer *ringBuffer, float targetGain, uint32_t rampFrames) {
+    if (ringBuffer == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(
+        &ringBuffer->requestedTargetGainPPM,
+        gainToPPM(targetGain),
+        memory_order_relaxed
+    );
+    atomic_store_explicit(&ringBuffer->requestedRampFrames, rampFrames, memory_order_relaxed);
+    atomic_fetch_add_explicit(&ringBuffer->gainRampRequestID, 1, memory_order_release);
+}
+
+uint32_t SonexisAudioRingBufferGetCurrentGainPPM(SonexisAudioRingBuffer *ringBuffer) {
+    if (ringBuffer == NULL) {
+        return 0;
+    }
+
+    return atomic_load_explicit(&ringBuffer->currentGainPPM, memory_order_relaxed);
 }
