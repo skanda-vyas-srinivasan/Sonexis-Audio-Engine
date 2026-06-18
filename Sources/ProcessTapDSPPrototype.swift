@@ -3,6 +3,7 @@ import Foundation
 
 private let processingGain: Float = 0.1
 private let unityGain: Float = 1.0
+private let startupRampDuration: TimeInterval = 0.25
 private let shutdownRampDuration: TimeInterval = 0.25
 private let routeChangeRampDuration: TimeInterval = 0.15
 private let rampSettleDuration: TimeInterval = 0.03
@@ -191,10 +192,10 @@ final class ProcessTapDSPPrototype {
         guard let createdRingBuffer = SonexisAudioRingBufferCreate(ringCapacityFrames, channelCount) else {
             throw PrototypeError(message: "Could not allocate realtime audio ring buffer")
         }
-        SonexisAudioRingBufferSetGainImmediate(createdRingBuffer, processingGain)
+        SonexisAudioRingBufferSetGainImmediate(createdRingBuffer, unityGain)
         ringBuffer = createdRingBuffer
         print("Created realtime ring buffer: \(ringCapacityFrames) frames, \(channelCount) channels")
-        print("Hardcoded gain: \(processingGain)")
+        print("Initial gain: \(unityGain); hardcoded target gain: \(processingGain)")
 
         let tapUID = try CoreAudioSupport.tapUID(tapID)
         tapAggregateDeviceID = try createPrivateAggregateDevice(tapUID: tapUID)
@@ -202,10 +203,20 @@ final class ProcessTapDSPPrototype {
 
         try createIOProcs()
         try startIO()
+        requestProcessingGainRamp(context: "pipeline start")
 
         activeTapSourceDevice = defaultOutput
         activePlaybackDevice = defaultOutput
         startStatusTimer()
+    }
+
+    private func requestProcessingGainRamp(context: String) {
+        guard let ringBuffer else { return }
+
+        let rampFrames = rampFrameCount(for: startupRampDuration)
+        let milliseconds = Int((startupRampDuration * 1000.0).rounded())
+        print("Gain: ramping processed path to \(processingGain) over \(milliseconds) ms (\(context)).")
+        SonexisAudioRingBufferRequestGainRamp(ringBuffer, processingGain, rampFrames)
     }
 
     private func smoothTeardownPipeline(
@@ -223,7 +234,7 @@ final class ProcessTapDSPPrototype {
             return
         }
 
-        let rampFrames = max(UInt32((activeSampleRate * rampDuration).rounded(.up)), 1)
+        let rampFrames = rampFrameCount(for: rampDuration)
         if log {
             let milliseconds = Int((rampDuration * 1000.0).rounded())
             print("Cleanup: ramping processed gain to unity over \(milliseconds) ms before releasing Process Tap.")
@@ -244,6 +255,10 @@ final class ProcessTapDSPPrototype {
             deadline: .now() + rampDuration + rampSettleDuration,
             execute: workItem
         )
+    }
+
+    private func rampFrameCount(for duration: TimeInterval) -> UInt32 {
+        max(UInt32((activeSampleRate * duration).rounded(.up)), 1)
     }
 
     private func teardownPipeline(log: Bool = false, reason: String = "pipeline teardown") {

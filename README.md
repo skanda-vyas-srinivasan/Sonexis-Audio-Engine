@@ -56,7 +56,7 @@ Then play audio in another app such as Spotify, YouTube, Music, or a browser.
 Expected signs of success:
 
 - Audio remains on the normal selected output device.
-- Audio becomes much quieter because the hardcoded gain is `0.1`.
+- On startup, processed playback begins near unity and ramps down to the hardcoded gain of `0.1`.
 - Pressing `Control-C` briefly ramps processed playback back to unity gain, then stops the app and returns normal system output.
 - Terminal diagnostics show nonzero `in/s`, nonzero `out/s`, and input peak above silence while source audio is playing.
 
@@ -78,6 +78,7 @@ When the default output device changes, the app:
 4. Frees the realtime ring buffer.
 5. Reads the new default output device.
 6. Recreates the full capture/playback pipeline on the new device.
+7. Starts the new processed path at unity gain and ramps down to `0.1`.
 
 Diagnostics print:
 

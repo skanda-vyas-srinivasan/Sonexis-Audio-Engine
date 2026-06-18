@@ -64,7 +64,7 @@ Audio callbacks must not:
 
 The current callback path uses a small C11-atomic single-producer/single-consumer ring buffer to avoid Swift macOS 15-only atomics and to keep callback work predictable on macOS 14.4.
 
-Gain changes are requested from the main thread with atomics and applied inside the tap callback. Shutdown and route rebuilds ramp the processed path back to unity before the tap is destroyed, so releasing `CATapMutedWhenTapped` does not abruptly jump from the prototype's `0.1` gain to normal system volume.
+Gain changes are requested from the main thread with atomics and applied inside the tap callback. Startup and route rebuilds initialize the processed path at unity and ramp down to the prototype's `0.1` gain. Shutdown and route rebuilds ramp back to unity before the tap is destroyed, so releasing `CATapMutedWhenTapped` does not abruptly jump from quiet processed audio to normal system volume.
 
 ## Route Changes
 
