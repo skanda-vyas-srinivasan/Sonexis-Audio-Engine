@@ -7,7 +7,7 @@ Other apps
   -> current default output device stream
   -> private Core Audio Process Tap
   -> private aggregate device input IOProc
-  -> hardcoded pitch-up DSP with unity gain and realtime gain ramp control
+  -> unity passthrough DSP with realtime gain ramp control
   -> preallocated realtime ring buffer
   -> default output device output IOProc
   -> speakers/headphones
@@ -45,7 +45,7 @@ Created with `AudioHardwareCreateAggregateDevice` and `kAudioAggregateDeviceTapL
 
 Tap aggregate IOProc
 
-Receives Float32 tap buffers and writes pitch-shifted samples into the realtime ring buffer.
+Receives Float32 tap buffers and writes processed samples into the realtime ring buffer.
 
 Default output IOProc
 
@@ -64,9 +64,9 @@ Audio callbacks must not:
 
 The current callback path uses a small C11-atomic single-producer/single-consumer ring buffer to avoid Swift macOS 15-only atomics and to keep callback work predictable on macOS 14.4.
 
-Gain changes are requested from the main thread with atomics and applied inside the tap callback. The current prototype keeps its processing gain at `1.0` so the pitch-up effect can be evaluated without an overall attenuation masking the result. Startup and route rebuilds initialize the processed path at unity and hold output reads until the ring has a small preroll buffer. If capture has started but the target fill is not reached, the app can accept a partial fill after a short timeout. Shutdown and route rebuilds confirm the processed path is at unity before the tap is destroyed, so releasing `CATapMutedWhenTapped` does not abruptly change overall gain.
+Gain changes are requested from the main thread with atomics and applied inside the tap callback. The product baseline keeps its processing gain at `1.0` so the engine proves capture/playback without changing tonal balance or loudness. Startup and route rebuilds initialize the processed path at unity and hold output reads until the ring has a small preroll buffer. If capture has started but the target fill is not reached, the app can accept a partial fill after a short timeout. Shutdown and route rebuilds confirm the processed path is at unity before the tap is destroyed, so releasing `CATapMutedWhenTapped` does not abruptly change overall gain.
 
-The pitch-up effect is a hardcoded dual-read-head delay-line pitch shifter implemented in `RealtimeAudioRing.c`. It raises audio by roughly seven semitones while preserving the output clock rate. This is intentionally simple and audible; it is not a production pitch shifter and can produce artifacts.
+The pitch-up effect is available only in `--debug-pitch-up` mode. It is a hardcoded dual-read-head delay-line pitch shifter implemented in `RealtimeAudioRing.c`. It raises audio by roughly seven semitones while preserving the output clock rate. This is intentionally simple and audible; it is not a production pitch shifter and can produce artifacts.
 
 The startup preroll gate is implemented in the C ring buffer with an atomic read-enabled flag. While the gate is closed, the output IOProc writes silence without draining captured frames. Once the main thread observes enough fill, it enables reads and requests the gain ramp. This avoids locks, allocation, and Swift state mutation in realtime callbacks.
 
@@ -116,7 +116,11 @@ Owns the current default output device IOProc. Its realtime callback only reads 
 
 `DSPProcessor.swift`
 
-Owns the hardcoded unity gain, pitch-shift setting, and ramp durations. It configures the ring buffer from the main thread; it does not allocate or run Swift DSP inside Core Audio callbacks.
+Owns the active `DSPConfiguration`, unity gain, optional debug pitch-shift setting, and ramp durations. It configures the ring buffer from the main thread; it does not allocate or run Swift DSP inside Core Audio callbacks.
+
+`ProcessTapDSPEngine.swift`
+
+Provides the stable start/stop facade intended for later Sonexis integration. The command-line prototype uses this facade instead of constructing the app coordinator directly.
 
 `RealtimeRingBuffer.swift`
 

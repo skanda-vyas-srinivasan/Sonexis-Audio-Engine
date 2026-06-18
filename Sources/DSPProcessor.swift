@@ -1,13 +1,44 @@
 import Foundation
 
 final class DSPProcessor {
-    let processingGain: Float = 1.0
+    let configuration: DSPConfiguration
     let unityGain: Float = 1.0
-    let pitchShiftEnabled = true
-    let pitchShiftSemitones: Float = 7.0
-    let startupRampDuration: TimeInterval = 0.40
-    let shutdownRampDuration: TimeInterval = 0.25
-    let routeChangeRampDuration: TimeInterval = 0.15
+
+    init(configuration: DSPConfiguration) {
+        self.configuration = configuration
+    }
+
+    var processingGain: Float {
+        configuration.processingGain
+    }
+
+    var pitchShiftEnabled: Bool {
+        configuration.pitchShift.enabled
+    }
+
+    var pitchShiftSemitones: Float {
+        configuration.pitchShift.semitones
+    }
+
+    var startupRampDuration: TimeInterval {
+        configuration.startupRampDuration
+    }
+
+    var shutdownRampDuration: TimeInterval {
+        configuration.shutdownRampDuration
+    }
+
+    var routeChangeRampDuration: TimeInterval {
+        configuration.routeChangeRampDuration
+    }
+
+    var processingDescription: String {
+        if pitchShiftEnabled {
+            return "debug pitch-up DSP"
+        }
+
+        return "unity passthrough DSP"
+    }
 
     func configureInitialGain(on ringBuffer: RealtimeRingBuffer) {
         ringBuffer.setGainImmediate(unityGain)

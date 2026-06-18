@@ -12,23 +12,36 @@ guard ProcessInfo.processInfo.isOperatingSystemAtLeast(requiredVersion) else {
     exit(EXIT_FAILURE)
 }
 
-let app = ProcessTapDSPApp()
+let arguments = Set(CommandLine.arguments.dropFirst())
+if arguments.contains("--help") {
+    print("Usage: ProcessTapDSP [--debug-pitch-up]")
+    print("")
+    print("Default mode is unity passthrough DSP with gain 1.0.")
+    print("--debug-pitch-up enables the audible +7 semitone proof effect.")
+    exit(EXIT_SUCCESS)
+}
+
+let configuration: DSPConfiguration = arguments.contains("--debug-pitch-up")
+    ? .debugPitchUp
+    : .productBaseline
+
+let engine = ProcessTapDSPEngine(configuration: configuration)
 
 signal(SIGINT, SIG_IGN)
 let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 interruptSource.setEventHandler {
-    app.stop(reason: "SIGINT / Control-C") {
+    engine.stop(reason: "SIGINT / Control-C") {
         exit(EXIT_SUCCESS)
     }
 }
 interruptSource.resume()
 
 do {
-    try app.start()
+    try engine.start()
     RunLoop.main.run()
 } catch {
     let startupError = error
-    app.stop(reason: "startup failure") {
+    engine.stop(reason: "startup failure") {
         fputs("\(startupError)\n", stderr)
         if let coreAudioError = startupError as? CoreAudioError,
            coreAudioError.operation == "AudioHardwareCreateProcessTap" {

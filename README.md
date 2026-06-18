@@ -5,7 +5,7 @@ Standalone macOS 14.4+ proof of concept for system-wide audio processing with Co
 The project proves this pipeline:
 
 ```text
-system audio -> Core Audio Process Tap -> hardcoded pitch-up DSP + unity gain -> current default output device
+system audio -> Core Audio Process Tap -> unity passthrough DSP -> current default output device
 ```
 
 It does not use BlackHole, a virtual audio driver, or manual output-device switching.
@@ -14,7 +14,8 @@ It does not use BlackHole, a virtual audio driver, or manual output-device switc
 
 - `AudioHardwareCreateProcessTap` captures live outgoing system audio.
 - `CATapMutedWhenTapped` suppresses the original direct output path while the app reads the tap.
-- The app applies a hardcoded pitch-up effect and keeps processing gain at unity.
+- The default app mode keeps processing gain at unity and passes audio through unchanged.
+- A `--debug-pitch-up` flag enables the audible pitch-shift proof effect.
 - Processed audio plays through the selected default output device.
 - Self-exclusion prevents the app's own playback from being recursively captured.
 - Input peak confirms real capture and drops to silence when source audio is paused.
@@ -57,9 +58,18 @@ Expected signs of success:
 
 - Audio remains on the normal selected output device.
 - On startup, processed playback waits for a small preroll buffer and remains at unity gain.
-- Source audio should sound pitched up by roughly seven semitones.
+- In default mode, source audio should sound unchanged except for the prototype handoff behavior.
 - Pressing `Control-C` briefly ramps processed playback back to unity gain, then stops the app and returns normal system output.
 - Terminal diagnostics show nonzero `in/s`, nonzero `out/s`, and input peak above silence while source audio is playing.
+
+For an obvious audible DSP proof:
+
+```sh
+cd /Users/skandavyassrinivasan/dev/ProcessTapDSP
+make run RUN_ARGS=--debug-pitch-up
+```
+
+In debug pitch mode, source audio should sound pitched up by roughly seven semitones.
 
 Example diagnostic:
 
@@ -122,6 +132,7 @@ The expected audible result is that normal system audio returns without a sudden
 - No channel remixing.
 - Startup preroll intentionally adds a small buffer before processed playback begins; this improves handoff smoothness but adds a small amount of latency.
 - Pitch shifting is a rough realtime proof-of-concept and can produce audible artifacts.
+- Pitch shifting is disabled by default and exists only as a debug proof effect.
 - No UI.
 - No configurable DSP.
 - No Audio Unit, VST, or plugin hosting.
@@ -137,8 +148,10 @@ Makefile
 Sources/
   AudioOutputEngine.swift
   CoreAudioSupport.swift
+  DSPConfiguration.swift
   DSPProcessor.swift
   ProcessTapDSPApp.swift
+  ProcessTapDSPEngine.swift
   RealtimeAudioRing.c
   RealtimeAudioRing.h
   RealtimeRingBuffer.swift

@@ -7,12 +7,15 @@ BUILD_DIR := .build
 APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 MODULE_CACHE := $(BUILD_DIR)/module-cache
+RUN_ARGS ?=
 
 SWIFT_SOURCES := \
 	Sources/AudioOutputEngine.swift \
 	Sources/CoreAudioSupport.swift \
+	Sources/DSPConfiguration.swift \
 	Sources/DSPProcessor.swift \
 	Sources/ProcessTapDSPApp.swift \
+	Sources/ProcessTapDSPEngine.swift \
 	Sources/RealtimeRingBuffer.swift \
 	Sources/TapCaptureEngine.swift \
 	Sources/main.swift
@@ -53,7 +56,7 @@ $(APP_BUNDLE): $(SWIFT_SOURCES) $(C_OBJECTS) Info.plist
 	codesign --force --sign - --timestamp=none "$(APP_BUNDLE)"
 
 run: $(APP_BUNDLE)
-	"$(EXECUTABLE)"
+	"$(EXECUTABLE)" $(RUN_ARGS)
 
 clean:
 	rm -rf "$(BUILD_DIR)"

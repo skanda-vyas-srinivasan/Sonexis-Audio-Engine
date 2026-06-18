@@ -11,7 +11,7 @@ private let rebuildRetryDelay: TimeInterval = 1.5
 private let rebuildRetryLimit = 4
 
 final class ProcessTapDSPApp {
-    private let dspProcessor = DSPProcessor()
+    private let dspProcessor: DSPProcessor
 
     private var tapCaptureEngine: TapCaptureEngine?
     private var audioOutputEngine: AudioOutputEngine?
@@ -33,6 +33,10 @@ final class ProcessTapDSPApp {
     private var statusTick: UInt64 = 0
     private var isStopped = true
     private var isSuspendedForSleep = false
+
+    init(configuration: DSPConfiguration = .productBaseline) {
+        self.dspProcessor = DSPProcessor(configuration: configuration)
+    }
 
     func start() throws {
         isStopped = false
@@ -80,7 +84,7 @@ final class ProcessTapDSPApp {
             teardownPipeline(log: reason != "initial start", reason: "rebuild cleanup")
             try buildPipeline()
             printRouteDiagnostics(context: "after rebuild")
-            print("Started Process Tap -> pitch-up DSP -> default output playback.")
+            print("Started Process Tap -> \(dspProcessor.processingDescription) -> default output playback.")
             print("Play system audio in another app. Press Control-C to stop.")
         } catch {
             teardownPipeline(log: true, reason: "rebuild failure cleanup")
@@ -137,7 +141,7 @@ final class ProcessTapDSPApp {
         ringBuffer = createdRingBuffer
         print("Created realtime ring buffer: \(ringCapacityFrames) frames, \(channelCount) channels")
         print("Initial gain: \(dspProcessor.unityGain); hardcoded target gain: \(dspProcessor.processingGain)")
-        print("Pitch shift: enabled=\(dspProcessor.pitchShiftEnabled), semitones=+\(dspProcessor.pitchShiftSemitones)")
+        print("Pitch shift: enabled=\(dspProcessor.pitchShiftEnabled), semitones=\(dspProcessor.pitchShiftSemitones)")
         print("Startup preroll target: \(startupPrerollTargetFrames) frames")
 
         let outputEngine = AudioOutputEngine()
@@ -480,7 +484,7 @@ final class ProcessTapDSPApp {
             do {
                 try self.buildPipeline()
                 self.printRouteDiagnostics(context: "after rebuild")
-                print("Started Process Tap -> pitch-up DSP -> default output playback.")
+                print("Started Process Tap -> \(self.dspProcessor.processingDescription) -> default output playback.")
                 print("Play system audio in another app. Press Control-C to stop.")
             } catch {
                 self.handleRebuildFailure(
