@@ -1,0 +1,116 @@
+# ProcessTapDSP
+
+Standalone macOS 14.4+ proof of concept for system-wide audio processing with Core Audio Process Taps.
+
+The project proves this pipeline:
+
+```text
+system audio -> Core Audio Process Tap -> hardcoded gain DSP -> current default output device
+```
+
+It does not use BlackHole, a virtual audio driver, or manual output-device switching.
+
+## Confirmed Behavior
+
+- `AudioHardwareCreateProcessTap` captures live outgoing system audio.
+- `CATapMutedWhenTapped` suppresses the original direct output path while the app reads the tap.
+- The app applies hardcoded gain DSP.
+- Processed audio plays through the selected default output device.
+- Self-exclusion prevents the app's own playback from being recursively captured.
+- Input peak confirms real capture and drops to silence when source audio is paused.
+- macOS output volume does not affect input peak, which is expected because the tap captures before hardware volume.
+- Default-output route changes trigger full pipeline teardown and rebuild.
+
+## Requirements
+
+- macOS 14.4 or newer.
+- Xcode or Xcode Command Line Tools with a macOS SDK that exposes Core Audio Process Tap APIs.
+- System audio capture permission when macOS prompts for it.
+
+The Process Tap API is public from macOS 14.2, but this prototype intentionally gates at macOS 14.4.
+
+## Build
+
+```sh
+cd /Users/skandavyassrinivasan/dev/ProcessTapDSP
+make
+```
+
+The build creates:
+
+```text
+.build/ProcessTapDSP.app
+```
+
+The app is ad-hoc signed by the Makefile.
+
+## Run
+
+```sh
+cd /Users/skandavyassrinivasan/dev/ProcessTapDSP
+make run
+```
+
+Then play audio in another app such as Spotify, YouTube, Music, or a browser.
+
+Expected signs of success:
+
+- Audio remains on the normal selected output device.
+- Audio becomes much quieter because the hardcoded gain is `0.1`.
+- Pressing `Control-C` stops the app and normal output volume returns.
+- Terminal diagnostics show nonzero `in/s`, nonzero `out/s`, and input peak above silence while source audio is playing.
+
+Example diagnostic:
+
+```text
+ring fill: 512 frames, in/s: 48000, out/s: 48000, input peak: -12.4 dBFS, dropped: 0, underflow: 0
+```
+
+## Route Changes
+
+The tap is device-scoped. It is created for the current default output device UID and stream index 0.
+
+When the default output device changes, the app:
+
+1. Stops tap and playback IOProcs.
+2. Destroys the private aggregate device.
+3. Destroys the Process Tap.
+4. Frees the realtime ring buffer.
+5. Reads the new default output device.
+6. Recreates the full capture/playback pipeline on the new device.
+
+Diagnostics print:
+
+- current default output device;
+- tap source device;
+- playback output device.
+
+After a successful rebuild, all three should identify the same output device.
+
+## Current Limitations
+
+- Captures stream index 0 of the selected output device only.
+- Requires matching Float32 tap/output formats.
+- No sample-rate conversion.
+- No channel remixing.
+- No UI.
+- No configurable DSP.
+- No Audio Unit, VST, or plugin hosting.
+- No app sandbox support has been validated.
+- No sleep/wake or device-disconnect hardening yet.
+- Bluetooth, AirPods, HDMI, and aggregate-device behavior still need systematic manual testing.
+
+## Source Layout
+
+```text
+Info.plist
+Makefile
+Sources/
+  CoreAudioSupport.swift
+  ProcessTapDSPPrototype.swift
+  RealtimeAudioRing.c
+  RealtimeAudioRing.h
+  main.swift
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the current Core Audio object model and realtime constraints.
