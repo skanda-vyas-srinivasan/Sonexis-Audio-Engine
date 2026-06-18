@@ -56,7 +56,7 @@ Then play audio in another app such as Spotify, YouTube, Music, or a browser.
 Expected signs of success:
 
 - Audio remains on the normal selected output device.
-- On startup, processed playback begins near unity and ramps down to the hardcoded gain of `0.1`.
+- On startup, processed playback waits for a small preroll buffer, begins near unity, then ramps down to the hardcoded gain of `0.1`.
 - Pressing `Control-C` briefly ramps processed playback back to unity gain, then stops the app and returns normal system output.
 - Terminal diagnostics show nonzero `in/s`, nonzero `out/s`, and input peak above silence while source audio is playing.
 
@@ -78,7 +78,7 @@ When the default output device changes, the app:
 4. Frees the realtime ring buffer.
 5. Reads the new default output device.
 6. Recreates the full capture/playback pipeline on the new device.
-7. Starts the new processed path at unity gain and ramps down to `0.1`.
+7. Waits for a small preroll buffer, starts the new processed path at unity gain, and ramps down to `0.1`.
 
 Diagnostics print:
 
@@ -109,6 +109,7 @@ The expected audible result is that normal system audio returns without a sudden
 - Requires matching Float32 tap/output formats.
 - No sample-rate conversion.
 - No channel remixing.
+- Startup preroll intentionally adds a small buffer before processed playback begins; this improves handoff smoothness but adds a small amount of latency.
 - No UI.
 - No configurable DSP.
 - No Audio Unit, VST, or plugin hosting.

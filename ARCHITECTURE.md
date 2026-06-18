@@ -64,7 +64,9 @@ Audio callbacks must not:
 
 The current callback path uses a small C11-atomic single-producer/single-consumer ring buffer to avoid Swift macOS 15-only atomics and to keep callback work predictable on macOS 14.4.
 
-Gain changes are requested from the main thread with atomics and applied inside the tap callback. Startup and route rebuilds initialize the processed path at unity and ramp down to the prototype's `0.1` gain. Shutdown and route rebuilds ramp back to unity before the tap is destroyed, so releasing `CATapMutedWhenTapped` does not abruptly jump from quiet processed audio to normal system volume.
+Gain changes are requested from the main thread with atomics and applied inside the tap callback. Startup and route rebuilds initialize the processed path at unity, hold output reads until the ring has a small preroll buffer, then ramp down to the prototype's `0.1` gain. If capture has started but the target fill is not reached, the app can accept a partial fill after a short timeout. Shutdown and route rebuilds ramp back to unity before the tap is destroyed, so releasing `CATapMutedWhenTapped` does not abruptly jump from quiet processed audio to normal system volume.
+
+The startup preroll gate is implemented in the C ring buffer with an atomic read-enabled flag. While the gate is closed, the output IOProc writes silence without draining captured frames. Once the main thread observes enough fill, it enables reads and requests the gain ramp. This avoids locks, allocation, and Swift state mutation in realtime callbacks.
 
 ## Route Changes
 

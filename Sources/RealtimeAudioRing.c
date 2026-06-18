@@ -20,6 +20,7 @@ struct SonexisAudioRingBuffer {
     atomic_uint requestedRampFrames;
     atomic_uint gainRampRequestID;
     atomic_uint currentGainPPM;
+    atomic_bool readEnabled;
     float currentGain;
     float rampTargetGain;
     uint32_t rampRemainingFrames;
@@ -111,6 +112,7 @@ SonexisAudioRingBuffer *SonexisAudioRingBufferCreate(uint32_t capacityFrames, ui
     atomic_init(&ringBuffer->requestedRampFrames, 0);
     atomic_init(&ringBuffer->gainRampRequestID, 0);
     atomic_init(&ringBuffer->currentGainPPM, gainToPPM(1.0f));
+    atomic_init(&ringBuffer->readEnabled, true);
     ringBuffer->currentGain = 1.0f;
     ringBuffer->rampTargetGain = 1.0f;
     ringBuffer->rampRemainingFrames = 0;
@@ -251,6 +253,9 @@ uint32_t SonexisAudioRingBufferReadToAudioBufferList(
     }
 
     zeroAudioBufferList(outputData);
+    if (!atomic_load_explicit(&ringBuffer->readEnabled, memory_order_acquire)) {
+        return 0;
+    }
 
     uint32_t writeFrame = atomic_load_explicit(&ringBuffer->writeFrame, memory_order_acquire);
     uint32_t readFrame = atomic_load_explicit(&ringBuffer->readFrame, memory_order_relaxed);
@@ -298,6 +303,14 @@ uint32_t SonexisAudioRingBufferReadToAudioBufferList(
     );
     atomic_store_explicit(&ringBuffer->readFrame, readFrame + framesToRead, memory_order_release);
     return framesToRead;
+}
+
+void SonexisAudioRingBufferSetReadEnabled(SonexisAudioRingBuffer *ringBuffer, bool enabled) {
+    if (ringBuffer == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(&ringBuffer->readEnabled, enabled, memory_order_release);
 }
 
 uint32_t SonexisAudioRingBufferGetFillFrames(SonexisAudioRingBuffer *ringBuffer) {

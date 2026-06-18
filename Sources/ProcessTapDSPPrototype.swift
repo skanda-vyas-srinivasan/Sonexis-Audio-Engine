@@ -3,7 +3,10 @@ import Foundation
 
 private let processingGain: Float = 0.1
 private let unityGain: Float = 1.0
-private let startupRampDuration: TimeInterval = 0.25
+private let startupPrerollTargetFrames: UInt32 = 1_024
+private let startupPrerollPollInterval: TimeInterval = 0.005
+private let startupPartialPrerollTimeout: TimeInterval = 0.35
+private let startupRampDuration: TimeInterval = 0.40
 private let shutdownRampDuration: TimeInterval = 0.25
 private let routeChangeRampDuration: TimeInterval = 0.15
 private let rampSettleDuration: TimeInterval = 0.03
@@ -53,6 +56,7 @@ final class ProcessTapDSPPrototype {
     private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
     private var routeChangeWorkItem: DispatchWorkItem?
     private var smoothTeardownWorkItem: DispatchWorkItem?
+    private var startupPrerollTimer: DispatchSourceTimer?
     private var activeTapSourceDevice: AudioDeviceSummary?
     private var activePlaybackDevice: AudioDeviceSummary?
     private var activeSampleRate: Double = 48_000.0
@@ -193,9 +197,11 @@ final class ProcessTapDSPPrototype {
             throw PrototypeError(message: "Could not allocate realtime audio ring buffer")
         }
         SonexisAudioRingBufferSetGainImmediate(createdRingBuffer, unityGain)
+        SonexisAudioRingBufferSetReadEnabled(createdRingBuffer, false)
         ringBuffer = createdRingBuffer
         print("Created realtime ring buffer: \(ringCapacityFrames) frames, \(channelCount) channels")
         print("Initial gain: \(unityGain); hardcoded target gain: \(processingGain)")
+        print("Startup preroll target: \(startupPrerollTargetFrames) frames")
 
         let tapUID = try CoreAudioSupport.tapUID(tapID)
         tapAggregateDeviceID = try createPrivateAggregateDevice(tapUID: tapUID)
@@ -203,11 +209,71 @@ final class ProcessTapDSPPrototype {
 
         try createIOProcs()
         try startIO()
-        requestProcessingGainRamp(context: "pipeline start")
+        scheduleStartupPreroll(context: "pipeline start")
 
         activeTapSourceDevice = defaultOutput
         activePlaybackDevice = defaultOutput
         startStatusTimer()
+    }
+
+    private func scheduleStartupPreroll(context: String) {
+        guard ringBuffer != nil else { return }
+
+        startupPrerollTimer?.cancel()
+        var firstFillTime: DispatchTime?
+        let partialTimeoutNanoseconds = UInt64(startupPartialPrerollTimeout * 1_000_000_000.0)
+
+        print(
+            "Startup: holding processed output until ring fill reaches \(startupPrerollTargetFrames) frames; partial fill accepted \(Int(startupPartialPrerollTimeout * 1000.0)) ms after capture begins."
+        )
+
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: startupPrerollPollInterval)
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.isStopped, let ringBuffer = self.ringBuffer else { return }
+
+            let fill = SonexisAudioRingBufferGetFillFrames(ringBuffer)
+            let now = DispatchTime.now()
+
+            if fill >= startupPrerollTargetFrames {
+                self.finishStartupPreroll(context: context, reason: "ring fill \(fill) frames")
+            } else if fill > 0 {
+                if firstFillTime == nil {
+                    firstFillTime = now
+                }
+
+                if let firstFillTime,
+                   now.uptimeNanoseconds - firstFillTime.uptimeNanoseconds >= partialTimeoutNanoseconds {
+                    self.finishStartupPreroll(context: context, reason: "partial ring fill \(fill) frames")
+                }
+            }
+        }
+        startupPrerollTimer = timer
+        timer.resume()
+    }
+
+    private func finishStartupPreroll(context: String, reason: String) {
+        guard let ringBuffer else { return }
+
+        startupPrerollTimer?.cancel()
+        startupPrerollTimer = nil
+        SonexisAudioRingBufferSetReadEnabled(ringBuffer, true)
+        print("Startup: releasing processed output after \(reason).")
+        requestProcessingGainRamp(context: context)
+    }
+
+    private func cancelStartupPreroll(enableRead: Bool, log: Bool) {
+        let hadTimer = startupPrerollTimer != nil
+        startupPrerollTimer?.cancel()
+        startupPrerollTimer = nil
+
+        if enableRead, let ringBuffer {
+            SonexisAudioRingBufferSetReadEnabled(ringBuffer, true)
+        }
+
+        if log, hadTimer {
+            print("Cleanup: canceled startup preroll gate.")
+        }
     }
 
     private func requestProcessingGainRamp(context: String) {
@@ -225,6 +291,7 @@ final class ProcessTapDSPPrototype {
         rampDuration: TimeInterval,
         completion: @escaping () -> Void
     ) {
+        cancelStartupPreroll(enableRead: true, log: log)
         smoothTeardownWorkItem?.cancel()
         smoothTeardownWorkItem = nil
 
@@ -265,6 +332,8 @@ final class ProcessTapDSPPrototype {
         if log {
             print("Cleanup: tearing down audio pipeline (\(reason)).")
         }
+
+        cancelStartupPreroll(enableRead: false, log: log)
 
         if statusTimer != nil {
             statusTimer?.cancel()
