@@ -14,4 +14,8 @@ final class ProcessTapDSPEngine {
     func stop(reason: String = "shutdown", completion: @escaping () -> Void = {}) {
         app.stop(reason: reason, completion: completion)
     }
+
+    func stopImmediately(reason: String = "immediate shutdown") {
+        app.stopImmediately(reason: reason)
+    }
 }

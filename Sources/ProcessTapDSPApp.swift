@@ -75,6 +75,28 @@ final class ProcessTapDSPApp {
         }
     }
 
+    func stopImmediately(reason: String = "immediate shutdown") {
+        print("")
+        print("Immediately stopping ProcessTapDSP: \(reason)")
+
+        if isStopped {
+            print("Immediate shutdown skipped: app is already stopped.")
+            return
+        }
+
+        isStopped = true
+        routeChangeWorkItem?.cancel()
+        routeChangeWorkItem = nil
+        recoveryWorkItem?.cancel()
+        recoveryWorkItem = nil
+        smoothTeardownWorkItem?.cancel()
+        smoothTeardownWorkItem = nil
+        removeSleepWakeObservers(log: true)
+        removeDefaultOutputListener(log: true)
+        teardownPipeline(log: true, reason: reason)
+        print("Immediate shutdown complete. Normal system audio should be restored.")
+    }
+
     private func rebuildPipeline(reason: String) throws {
         print("")
         print("Rebuilding audio pipeline: \(reason)")

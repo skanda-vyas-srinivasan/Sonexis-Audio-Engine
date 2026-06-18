@@ -70,6 +70,8 @@ The pitch-up effect is available only in `--debug-pitch-up` mode. It is a hardco
 
 The startup preroll gate is implemented in the C ring buffer with an atomic read-enabled flag. While the gate is closed, the output IOProc writes silence without draining captured frames. Once the main thread observes enough fill, it enables reads and requests the gain ramp. This avoids locks, allocation, and Swift state mutation in realtime callbacks.
 
+The normal stop path uses the smooth ramp before destroying the tap. The engine also exposes an immediate stop path for host-application termination, where the app may not be able to wait for the smooth asynchronous ramp. Immediate stop is less perceptually polished but still explicitly tears down IOProcs, the private aggregate device, the Process Tap, and the ring buffer.
+
 ## Route Changes
 
 Process Taps created with a device UID are device-scoped. When the default output changes, the existing tap remains associated with the original device.
